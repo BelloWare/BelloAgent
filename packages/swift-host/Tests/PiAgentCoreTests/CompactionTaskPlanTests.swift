@@ -327,6 +327,36 @@ final class CompactionTaskPlanTests: HelperTestCase {
         XCTAssertThrowsError(try prepare(rounds,reserved,[],policy)) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_budget") }
     }
 
+    /// After a gateway's context rejection the ordinary plan comes first; when
+    /// it cannot be made, what must stay is kept with the checkpoint though
+    /// that passes half the usable input, provided the replacement fits a
+    /// normal request, in tokens and in bytes, at the whole summary allowance
+    /// (Astra's ruling, 2026-11-11). Nothing required is dropped either way.
+    func testRecoveryKeepsWhatMustStayWhereTheOrdinaryPlanCannotBeMade() throws {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=128_000
+        let profile=try Profile(raw)
+        func context(batch chars: Int) -> [ChatMessage] {
+            [user("old",String(repeating:"u",count:40_000)),reply("old-reply",String(repeating:"a",count:120_000),root:"old"),user("task","Port the parser.")]+batch("b",results:3,chars:chars,root:"task")
+        }
+        func prepare(_ frozen: [ChatMessage], _ reason: String, _ policy: CompactionPolicy = CompactionPolicy()) throws -> PreparedCompaction {
+            try CompactionPlanner.prepare(frozen:frozen,profile:profile,instructions:"Policy",definitions:[],sessionID:"s",cacheSessionID:"s",taskRoot:"task",policy:policy,reason:reason,focus:nil)
+        }
+        // 60,000 tokens in flight: more than half of 110,000 usable with any summary.
+        let large=context(batch:80_000), required=["task","b","b-result-0","b-result-1","b-result-2"]
+        XCTAssertThrowsError(try prepare(large,"threshold")) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_unavailable") }
+        let recovery=try prepare(large,"context-rejection")
+        XCTAssertEqual(recovery.plan.keptMessages.map(\.id),required); XCTAssertEqual(recovery.plan.summarized.map(\.id),["old","old-reply"])
+        XCTAssertNil(recovery.replacementTarget,"Recovery's own acceptance, not the half")
+        // The ordinary plan, where it can be made, is recovery's plan too.
+        let ordinary=try prepare(context(batch:8_000),"context-rejection")
+        XCTAssertEqual(ordinary.plan.keptMessages.map(\.id),required); XCTAssertNotNil(ordinary.replacementTarget)
+        // At the whole allowance the replacement must fit: in bytes,
+        var limited=CompactionPolicy(); limited.maximumRequestBytes=280_000
+        XCTAssertThrowsError(try prepare(large,"context-rejection",limited),"240 KB of results and a 65 KB checkpoint") { XCTAssertEqual(($0 as? AgentError)?.code,"compact_unavailable") }
+        // and in tokens, beside the output reserve: 108,000 tokens in flight leave no room for 16,384 more.
+        XCTAssertThrowsError(try prepare(context(batch:144_000),"context-rejection")) { XCTAssertEqual(($0 as? AgentError)?.code,"compact_budget") }
+    }
+
     // MARK: compatibility
 
     private func record(kept: [String], protected: [String]? = nil, source: [String], continuation: String? = nil, legacy: Bool = false) -> JSON {

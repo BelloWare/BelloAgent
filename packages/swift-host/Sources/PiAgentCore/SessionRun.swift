@@ -304,7 +304,7 @@ extension AgentSession {
                         } catch let error as AgentError {
                             // Case 1 of pi's _checkCompaction: compact and retry once.
                             // A task whose automatic compaction already failed is not summarized again: the overflow pauses the chat.
-                            guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, !automaticCompactionSuppressed, canCompact(recovering:true), !Task.isCancelled else { throw error }
+                            guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, !automaticCompactionSuppressed, !automaticSummarySpent, canCompact(recovering:true), !Task.isCancelled else { throw error }
                             overflowRecoveryAttempted=true
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
@@ -316,15 +316,11 @@ extension AgentSession {
                             contextRecovery=recovery; recovered=true
                             // A recovery that cannot compact leaves the overflow as the run's failure, as in pi.
                             let overflow=error
-                            do { try await compactContext(reason:"context-rejection") }
-                            // A stop at the chat's cost limit is the run's failure, not the overflow.
-                            catch let stopped as AgentError where stopped.code == Self.costLimitCode { throw stopped }
-                            catch let failed where !(failed is CancellationError) && !Task.isCancelled {
-                                // What is not an ordinary compaction failure (a damaged
-                                // journal, an accounting hold) is the run's failure itself.
-                                guard recoverableCompactionFailure(failed) else { throw failed }
-                                try suppressAutomaticCompaction(); throw overflow
-                            }
+                            // The shared policy: a stop at the chat's cost limit, a
+                            // damaged journal or an accounting hold is the run's
+                            // failure itself; a plan that cannot be made, or a
+                            // summary that is not adopted, leaves the overflow, once.
+                            guard try await automaticCompaction(reason:"context-rejection") else { throw overflow }
                             try Task.checkCancellation()
                             // Pi continues its loop after the compaction, delivering queued steering first.
                             if try await drainSteering() { overflowRecoveryAttempted=false }
@@ -358,6 +354,8 @@ extension AgentSession {
                     // A reply the journal refuses keeps its log, set aside when the run settles.
                     do { try append(assistant) } catch { partialReplyUnsaved=true; flushStreamed(as:assistant.id); throw error }
                     cumulativeUsage.observe(reply.usage)
+                    // A reply of the model: the next automatic summary may be paid for.
+                    automaticSummarySpent=false
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()

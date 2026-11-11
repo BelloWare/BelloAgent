@@ -68,15 +68,19 @@ private actor FlowClient: ModelClient {
 /// Every call returns `chars` characters that name the call. A call named in
 /// `gate` waits until `open()`.
 private actor BulkTools: ToolExecuting {
-    let chars: Int, schema: Int
+    let chars: Int, schema: Int, sizes: [String: Int]
     var gate: String?, waiting = false
+    /// The calls made, in order: a call is made once.
+    var invoked: [String] = []
     /// `schema`: characters of tool description, for a chat whose tool schemas are large.
-    init(chars: Int, gate: String? = nil, schema: Int = 0) { self.chars=chars; self.gate=gate; self.schema=schema }
+    /// `sizes`: the characters a named call returns instead of `chars`.
+    init(chars: Int, gate: String? = nil, schema: Int = 0, sizes: [String: Int] = [:]) { self.chars=chars; self.gate=gate; self.schema=schema; self.sizes=sizes }
     func open() { gate=nil }
     func definitions(readOnly:Bool)->[ToolDefinition] { [ToolDefinition("read","test"+String(repeating:"d",count:schema),[:])] }
     func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
         while gate == call.id { waiting=true; try await Task.sleep(for:.milliseconds(5)) }
-        return resultText("RESULT-\(call.id) "+String(repeating:"r",count:chars))
+        invoked.append(call.id)
+        return resultText("RESULT-\(call.id) "+String(repeating:"r",count:sizes[call.id] ?? chars))
     }
 }
 /// A reply that asks for `count` reads at once, as models that read in parallel do.
@@ -414,7 +418,9 @@ final class CompactionReviewTests: HelperTestCase {
         XCTAssertEqual(purposes,["turn","turn","turn"],"No summary is asked for, and the turn is not stopped")
         let last=try item(sent,2).body
         XCTAssertEqual(userTexts(last),[long],"The request as written"); XCTAssertEqual(outputs(last),["RESULT-c0-0","RESULT-c1-0"],"and both batches")
-        XCTAssertEqual(held,"task","One attempt for the task")
+        // A plan that could not be made cost nothing: it is not a failed attempt, and nothing is written off.
+        let fingerprint=await s.failedCompactionFingerprint, path=await s.path, journal=try String(contentsOfFile:try XCTUnwrap(path),encoding:.utf8)
+        XCTAssertNil(held); XCTAssertNil(fingerprint); XCTAssertFalse(journal.contains(JournalRecordKind.compactionFailure),"No failure record")
         await s.close()
     }
 
@@ -491,6 +497,199 @@ final class CompactionReviewTests: HelperTestCase {
         XCTAssertEqual(asked,["turn","turn"],"No second summary for the task")
         XCTAssertEqual(end["state"].text,"idle",end["errorMessage"].text ?? "")
         await reopened.close()
+    }
+}
+
+/// A plan that cannot be made costs nothing and is tried again when the chat
+/// changes; a summary that was paid for and not adopted ends the task's
+/// automatic attempts (Astra's ruling, 2026-11-11). The case behind it, in a
+/// 128,000-token window: a batch of 60,000 tokens in flight when the working
+/// threshold is crossed. Nothing can be planned around it; one small round
+/// later a plan fits easily, and writing the task off at the first refusal
+/// stopped the chat at an overflow it could have compacted away.
+final class CompactionRefusalTests: HelperTestCase {
+    private let task="OWNER-TASK: port the parser to the new grammar, keep the old entry point, and run every test."
+    /// Four results of 15,000 tokens, each under the 65,536 bytes a tool's
+    /// result may be before the session cuts it: 60,000 tokens in flight.
+    private let large=["c0-0":60_000,"c0-1":60_000,"c0-2":60_000,"c0-3":60_000]
+    private func profile() throws -> Profile { var raw=try fixtureProfile().raw; raw["contextWindow"]=128_000; return try Profile(raw) }
+    private func session(_ root: URL, _ client: FlowClient, tools: BulkTools, window: Int = 128_000, seed: [ChatMessage]? = nil) throws -> AgentSession {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=JSON(window)
+        return try AgentSession(id:"refusal",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),seed:seed)
+    }
+    private func settled(_ s: AgentSession) async throws -> JSON {
+        try await eventually(timeout:.seconds(30)) { !(await s.isRunning) }
+        return await s.snapshot()
+    }
+    private func attempts(_ s: AgentSession) async -> Int { await s.history.filter { $0.kind == "execution" && ($0.detail ?? "").hasPrefix("Compaction") }.count }
+    /// Half the usable input, from the instruction a summary request carried.
+    private func half(_ request: JSON) throws -> Int {
+        let policy=CompactionPolicy(), instruction=try XCTUnwrap(request["input"].list.last)
+        return policy.share(try policy.usable(profile:profile(),instructionTokens:RequestContextCounter.inputTokens([instruction])),policy.replacementShare)
+    }
+
+    /// At the threshold: refused with the large batch in flight, planned
+    /// again one small round later, and compacted then.
+    func testAPlanThatCouldNotBeMadeIsMadeWhenTheChatChanges() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient(replies:[reads(0,4),reads(1),answer("All done.")]), tools=BulkTools(chars:4_000,sizes:large)
+        let s=try session(root,client,tools:tools,seed:earlier(4))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, following=await client.after(), held=await s.suppressedCompactionTask, fingerprint=await s.failedCompactionFingerprint
+        XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? "")
+        XCTAssertEqual(purposes,["turn","turn","compaction","turn"],"No summary with the large batch in flight; one as soon as a plan fits")
+        XCTAssertNil(held); XCTAssertNil(fingerprint)
+        let next=try item(following,0)
+        XCTAssertEqual(Array(userTexts(next).dropFirst()),[task]); XCTAssertEqual(outputs(next),["RESULT-c1-0"],"The small batch in flight stays; the large one, answered, is the summary")
+        XCTAssertLessThanOrEqual(RequestContextCounter.projectedTokens(next),(128_000-1_024-16_384)/2)
+        await s.close()
+    }
+
+    /// At an overflow: the ordinary plan cannot be made, and recovery keeps
+    /// exactly what it must (the request and the batch in flight) though that
+    /// is more than half the usable input, because it fits a normal request
+    /// beside the whole summary allowance. No tool runs twice.
+    func testAnOverflowRecoversWithWhatMustStayAboveTheHalf() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let rejected=AgentError("provider_http","HTTP 400 rejected input",failure:.inputContextExceeded)
+        let client=FlowClient([.reply(reads(0,4)),.fail(rejected),.reply(answer("All done."))]), tools=BulkTools(chars:4_000,sizes:large)
+        let s=try session(root,client,tools:tools,seed:earlier(4))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, sent=await client.sent, context=await s.context, invoked=await tools.invoked, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? "")
+        XCTAssertEqual(purposes,["turn","turn","compaction","turn"],"Refused at the threshold, rejected by the gateway, recovered")
+        XCTAssertEqual(context.first?.kind,"compaction"); XCTAssertEqual(context.first?.compaction?["reason"].text,"context-rejection"); XCTAssertNil(held)
+        let request=try XCTUnwrap(sent.first { $0.purpose == "compaction" }?.body), after=try XCTUnwrap(context.first?.compaction?["after"]["requestTokens"].int)
+        XCTAssertGreaterThan(after,try half(request),"Adopted above the half: recovery's own acceptance")
+        let next=try item(sent,3).body
+        XCTAssertEqual(Array(userTexts(next).dropFirst()),[task]); XCTAssertEqual(outputs(next),["RESULT-c0-0","RESULT-c0-1","RESULT-c0-2","RESULT-c0-3"],"Nothing that must stay is dropped")
+        XCTAssertEqual(invoked.sorted(),["c0-0","c0-1","c0-2","c0-3"],"and no tool ran again")
+        await s.close()
+    }
+
+    /// The same refusal is not planned twice for the same chat; a change of
+    /// the chat plans again; an overflow asks afresh, because recovery admits
+    /// what the threshold could not.
+    func testARefusalIsRememberedForTheSameChatOnlyAndAnOverflowAsksAfresh() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var call=reads(0,3).message; call.id="batch"; call.taskRootID="task"
+        let results=(0..<3).map { n -> ChatMessage in
+            var result=ChatMessage(role:"toolResult",content:[textBlock("RESULT-c0-\(n) "+String(repeating:"r",count:80_000))])
+            result.id="batch-result-\(n)"; result.toolCallId="c0-\(n)"; result.toolName="read"; result.taskRootID="task"; return result
+        }
+        let client=FlowClient([])
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:earlier(4)+[user("task",task),call]+results)
+        var planned=try await s.automaticCompaction(reason:"threshold"); var rows=await attempts(s)
+        XCTAssertFalse(planned); XCTAssertEqual(rows,1)
+        planned=try await s.automaticCompaction(reason:"threshold"); rows=await attempts(s)
+        XCTAssertFalse(planned); XCTAssertEqual(rows,1,"Identical inputs: the refusal is reused, with no new operation row")
+        try await s.append(user("steer","OWNER-STEER: and the changelog.",root:"task"))
+        planned=try await s.automaticCompaction(reason:"threshold"); rows=await attempts(s)
+        XCTAssertFalse(planned); XCTAssertEqual(rows,2,"The chat changed: planned again")
+        var held=await s.suppressedCompactionTask, fingerprint=await s.failedCompactionFingerprint, asked=await client.purposes
+        XCTAssertNil(held); XCTAssertNil(fingerprint); XCTAssertEqual(asked,[],"Three refusals, nothing spent, nothing written off")
+        planned=try await s.automaticCompaction(reason:"context-rejection"); rows=await attempts(s)
+        held=await s.suppressedCompactionTask; asked=await client.purposes
+        let context=await s.context
+        XCTAssertTrue(planned,"Recovery admits the required rows"); XCTAssertEqual(rows,3); XCTAssertEqual(asked,["compaction"]); XCTAssertNil(held)
+        XCTAssertEqual(context.dropFirst().map(\.id),["task","batch","batch-result-0","batch-result-1","batch-result-2","steer"])
+        await s.close()
+    }
+
+    /// The same case at an overflow: refused with the large batch in flight,
+    /// then, the small batch after it in flight, a context rejection is
+    /// recovered by the ordinary plan, under the half.
+    func testAnOverflowAfterARefusalIsRecoveredOnceTheLargeBatchIsAnswered() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        func batch(_ round: Int, _ count: Int, chars: Int) -> [ChatMessage] {
+            var call=reads(round,count).message; call.id="batch\(round)"; call.taskRootID="task"
+            return [call]+(0..<count).map { n -> ChatMessage in
+                var result=ChatMessage(role:"toolResult",content:[textBlock("RESULT-c\(round)-\(n) "+String(repeating:"r",count:chars))])
+                result.id="batch\(round)-result-\(n)"; result.toolCallId="c\(round)-\(n)"; result.toolName="read"; result.taskRootID="task"; return result
+            }
+        }
+        let client=FlowClient([])
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:earlier(4)+[user("task",task)]+batch(0,3,chars:80_000))
+        var planned=try await s.automaticCompaction(reason:"threshold")
+        XCTAssertFalse(planned,"60,000 tokens in flight: no plan")
+        for message in batch(1,1,chars:4_000) { try await s.append(message) }
+        planned=try await s.automaticCompaction(reason:"context-rejection")
+        let asked=await client.purposes, sent=await client.sent, context=await s.context, held=await s.suppressedCompactionTask
+        XCTAssertTrue(planned); XCTAssertEqual(asked,["compaction"]); XCTAssertNil(held)
+        XCTAssertEqual(context.dropFirst().map(\.id),["task","batch1","batch1-result-0"],"The request and the batch in flight; the large batch is the summary")
+        let request=try XCTUnwrap(sent.first?.body), after=try XCTUnwrap(context.first?.compaction?["after"]["requestTokens"].int)
+        XCTAssertLessThanOrEqual(after,try half(request),"The ordinary plan, within the half")
+        await s.close()
+    }
+
+    /// One paid summary between two replies of the model. What can add to a
+    /// chat without a reply is the owner's steering and agent mail: here a
+    /// threshold compaction, then 30,000 tokens of steering, then a context
+    /// rejection. A second summary could be planned, and is not sent; steering
+    /// does not clear that, the model's next reply does.
+    func testNoSecondSummaryIsPaidForUntilTheModelReplies() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let rounds=(0..<8).flatMap { n -> [ChatMessage] in
+            var call=reads(n).message; call.id="call\(n)"; call.taskRootID="task"
+            var result=ChatMessage(role:"toolResult",content:[textBlock("RESULT-c\(n)-0 "+String(repeating:"r",count:32_000))])
+            result.id="result\(n)"; result.toolCallId="c\(n)-0"; result.toolName="read"; result.taskRootID="task"; return [call,result]
+        }
+        let client=FlowClient(replies:[answer("Noted.")])
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:earlier(4)+[user("task",task)]+rounds)
+        var adopted=try await s.automaticCompaction(reason:"threshold"), asked=await client.purposes
+        XCTAssertTrue(adopted); XCTAssertEqual(asked,["compaction"])
+        try await s.append(user("steer","OWNER-STEER: "+String(repeating:"s",count:120_000),root:"task"))
+        adopted=try await s.automaticCompaction(reason:"context-rejection"); asked=await client.purposes
+        var held=await s.suppressedCompactionTask, rows=await attempts(s)
+        XCTAssertFalse(adopted); XCTAssertEqual(asked,["compaction"],"Steering is not a reply: no second summary"); XCTAssertNil(held); XCTAssertEqual(rows,1,"and no attempt is shown")
+        adopted=try await s.automaticCompaction(reason:"threshold"); asked=await client.purposes
+        XCTAssertFalse(adopted); XCTAssertEqual(asked,["compaction"],"at a threshold either")
+        _=try await s.submit(Submission(commandID:"n",turnID:"next",text:"And the changelog."),steer:false)
+        _=try await settled(s); asked=await client.purposes
+        XCTAssertEqual(asked,["compaction","turn"],"The request goes as it is")
+        _=try await s.automaticCompaction(reason:"threshold"); asked=await client.purposes; held=await s.suppressedCompactionTask
+        XCTAssertEqual(asked,["compaction","turn","compaction"],"The model replied: a summary may be paid for again"); XCTAssertNil(held)
+        await s.close()
+    }
+
+    /// A new task counts afresh, as it does for a task's suppression: a
+    /// summary that no reply followed does not leave the next message without
+    /// recovery. Here the request of the next task is rejected and recovered.
+    func testANewTaskMayPayForASummaryThoughNoReplyFollowedTheLast() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let rounds=(0..<8).flatMap { n -> [ChatMessage] in
+            var call=reads(n).message; call.id="call\(n)"; call.taskRootID="task"
+            var result=ChatMessage(role:"toolResult",content:[textBlock("RESULT-c\(n)-0 "+String(repeating:"r",count:32_000))])
+            result.id="result\(n)"; result.toolCallId="c\(n)-0"; result.toolName="read"; result.taskRootID="task"; return [call,result]
+        }
+        let rejected=AgentError("provider_http","HTTP 400 rejected input",failure:.inputContextExceeded)
+        let client=FlowClient([.fail(rejected),.reply(answer("Noted."))])
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:earlier(4)+[user("task",task)]+rounds)
+        let adopted=try await s.automaticCompaction(reason:"threshold")
+        XCTAssertTrue(adopted)
+        _=try await s.submit(Submission(commandID:"n",turnID:"next",text:"And the changelog."),steer:false)
+        let state=try await settled(s), asked=await client.purposes, context=await s.context
+        XCTAssertEqual(asked,["compaction","turn","compaction","turn"],"Rejected, recovered with one summary, answered")
+        XCTAssertEqual(state["state"].text,"idle",state["errorMessage"].text ?? ""); XCTAssertEqual(context.first?.compaction?["reason"].text,"context-rejection")
+        await s.close()
+    }
+
+    /// A request that overflows right after a compaction, with nothing added
+    /// since, is not answered with a second summary: the overflow is the
+    /// run's failure, once.
+    func testAnOverflowRightAfterACompactionIsNotSummarizedAgain() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let rejected=AgentError("provider_http","HTTP 400 rejected input",failure:.inputContextExceeded)
+        // A 200,000-token window: the compaction keeps the task's five rounds
+        // whole (60,000 tokens).
+        let client=FlowClient((0..<5).map { Step.reply(reads($0,3)) }+[.fail(rejected)])
+        let s=try session(root,client,tools:BulkTools(chars:16_000),window:200_000,seed:earlier(10))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, context=await s.context
+        XCTAssertEqual(purposes,Array(repeating:"turn",count:5)+["compaction","turn"],"The compaction, the request that overflowed, and no second summary")
+        XCTAssertEqual(state["state"].text,"error"); XCTAssertEqual(context.filter { $0.kind == "compaction" }.count,1)
+        await s.close()
     }
 }
 

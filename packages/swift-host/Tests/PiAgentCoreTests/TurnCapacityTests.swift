@@ -106,8 +106,8 @@ final class TurnCapacityTests: HelperTestCase {
     /// small for the history's one summary request refuses the compaction
     /// before anything is sent. Since 0.1.137 that does not fail the turn: as
     /// pi does after a failed threshold compaction, the turn's request is
-    /// still sent, intact, for the gateway to judge, and no other summary is
-    /// tried for the task.
+    /// still sent, intact, for the gateway to judge. Nothing was spent, so
+    /// the task is not written off: a plan is tried again when the chat changes.
     func testAWindowTooSmallForOneSummaryRequestSendsNoSummary() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         // A first task of 7,000 tokens, more than the 8,000-token window
@@ -128,7 +128,7 @@ final class TurnCapacityTests: HelperTestCase {
         XCTAssertTrue(snapshot["compaction"]["error"].text?.contains("Nothing was sent") == true)
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
         XCTAssertEqual(requests.last?.filter(\.replayEligible).map(\.id), before.map(\.id) + ["small"], "The request is the intact context")
-        XCTAssertEqual(held, "small", "No other automatic compaction for this task")
+        XCTAssertNil(held, "Nothing was sent, so the task's automatic compaction is not ended")
         await session.close()
     }
 

@@ -1,5 +1,14 @@
 import Foundation
 
+/// What an automatic compaction's plan depends on (`AgentSession.compactionInputs`).
+struct CompactionInputs: Equatable, Sendable {
+    let recovery: Bool
+    let revision: UInt64
+    let task: String?
+    let profile: JSON
+    let resources: String?
+}
+
 func compactionDetail(tokens: Int?, kept: Int) -> String {
     "Compacted \(tokens.map(String.init) ?? "unknown") estimated input tokens · \(kept) messages kept"
 }
@@ -103,9 +112,16 @@ extension AgentSession {
         guard !Task.isCancelled, !costPaused, accountingFailure == nil, let error=error as? AgentError else { return false }
         return Self.recoverableCompactionFailures.contains(error.code)
     }
-    /// One failed automatic compaction per task: every later round changes
-    /// the context, so a fingerprint alone would ask again each time.
+    /// One summary paid for and not adopted per task: every later round
+    /// changes the context, so a fingerprint alone would ask again each time.
+    /// A plan that could not be made is not such an attempt (`automaticCompaction`).
     var automaticCompactionSuppressed: Bool { taskRootID != nil && suppressedCompactionTask == taskRootID }
+    /// What a plan depends on: the replayed context and its task, the
+    /// request's configuration, and the mode, since recovery admits what a
+    /// threshold does not. Presentation rows change none of it.
+    func compactionInputs(reason: String) -> CompactionInputs {
+        CompactionInputs(recovery:reason == "context-rejection",revision:contextMutation,task:taskRootID,profile:turnProfile.raw,resources:appliedSnapshot?.revision)
+    }
     /// The record that ends a task's automatic attempts. A chat with no
     /// journal yet (a side not saved) holds it in memory, and its first
     /// journal carries it (`keepNow`).
@@ -125,21 +141,35 @@ extension AgentSession {
     }
     /// The one policy for every automatic compaction (threshold, agent
     /// delivery, overflow recovery): whether a checkpoint was adopted. A
-    /// recoverable failure leaves the context intact, is recorded on the
-    /// operation's row, and ends automatic attempts for this task.
+    /// recoverable failure leaves the context intact and shows on the
+    /// operation's row. What follows depends on whether it cost a request:
+    /// - before the summary request was sent, compaction is unavailable for
+    ///   this context, nothing more: no failure is recorded, the task is not
+    ///   written off, and a plan is tried again when its inputs change (a
+    ///   task's required rows change every round; the same inputs are not
+    ///   planned twice);
+    /// - after it, the summary was paid for and not adopted: automatic
+    ///   compaction ends for the task, durably.
+    /// And one summary at most is paid for between two replies of the model.
     func automaticCompaction(reason: String) async throws -> Bool {
-        guard !automaticCompactionSuppressed else { return false }
+        guard !automaticCompactionSuppressed, !automaticSummarySpent else { return false }
+        let inputs=compactionInputs(reason:reason)
+        guard unavailableCompaction != inputs else { return false }
         do { try await compactContext(reason:reason); return true }
-        catch where recoverableCompactionFailure(error) { try suppressAutomaticCompaction(); return false }
+        catch where recoverableCompactionFailure(error) {
+            if compactionDispatched { try suppressAutomaticCompaction() } else { unavailableCompaction=inputs }
+            return false
+        }
     }
     /// The compaction due before the request counted as `tokens`, if any.
     func compactAtThreshold(_ tokens: Int, instructions: String) async throws -> Bool {
-        guard autoCompaction, !titleTask, !automaticCompactionSuppressed else { return false }
+        guard autoCompaction, !titleTask, !automaticCompactionSuppressed, !automaticSummarySpent else { return false }
         let threshold: Int
         // A budget that cannot hold a summary makes compaction unavailable;
-        // it does not fail a request that can still be sent.
+        // it does not fail a request that can still be sent, and nothing
+        // was spent on it.
         do { threshold=try compactionThreshold(requestContext,instructions:instructions,profile:turnProfile,taskStart:atTaskStart) }
-        catch where recoverableCompactionFailure(error) { try suppressAutomaticCompaction(); return false }
+        catch where recoverableCompactionFailure(error) { return false }
         guard tokens >= threshold, canCompact else { return false }
         return try await automaticCompaction(reason:"threshold")
     }
@@ -154,7 +184,7 @@ extension AgentSession {
         let focus=reason == "manual" ? compactionFocus : nil; compactionFocus=nil
         let frozen=context.filter(\.replayEligible), revision=contextMutation, originalProfile=turnProfile
         let frozenTask=taskRootID, frozenKey=apiKey, frozenCache=promptCacheSessionID, frozenApplied=appliedSnapshot?.revision
-        compactionAttemptIDs=[]; compactionPhysicalAttempts=0
+        compactionAttemptIDs=[]; compactionPhysicalAttempts=0; compactionDispatched=false
         compactionState=["operationId":JSON(UUID().uuidString),"phase":"planning","reason":JSON(reason),"httpAttempts":0,"durable":JSON(journal != nil)]
         if reason == "context-rejection" { compactionState["recovery"]=contextRecovery }
         compactionPresentationID = UUID().uuidString
@@ -211,7 +241,10 @@ extension AgentSession {
             let reduction=before.requestTokens-after.requestTokens
             // An automatic checkpoint has to leave the planned gap before the
             // next trigger, not merely fall below it.
-            guard reduction > 0, reason == "manual" || (reduction >= after.safetyMargin && after.requestTokens <= (prepared.replacementTarget ?? Int.max)) else {
+            // After a context rejection, where only what must stay was
+            // planned, the half does not apply: fitting the normal reserve
+            // (above) and saving the safety margin do.
+            guard reduction > 0, reason == "manual" || (reduction >= after.safetyMargin && (prepared.recoveryOnly || after.requestTokens <= (prepared.replacementTarget ?? Int.max))) else {
                 throw AgentError("compact_no_progress", "The completed checkpoint did not free sufficient context (before \(before.requestTokens), after \(after.requestTokens) estimated tokens). Original context is unchanged; no repair request was sent.")
             }
             operationStatus("Candidate summary validated")
@@ -260,7 +293,9 @@ extension AgentSession {
                 // A cost-limit pause cut (or refused) it: not a failure of
                 // this context, so Resume compacts it again.
                 let paused = costPaused || (error as? AgentError)?.code == Self.costLimitCode || error is CancellationError
-                if !Task.isCancelled, !paused, let fingerprint=compactionState["sourceFingerprint"].text {
+                // A failed attempt is one whose summary request was sent; a
+                // plan that could not be made leaves no record.
+                if !Task.isCancelled, !paused, compactionDispatched, let fingerprint=compactionState["sourceFingerprint"].text {
                     failedCompactionFingerprint=fingerprint
                     _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":["fingerprint":JSON(fingerprint)]],flush:true)
                 }

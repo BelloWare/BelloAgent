@@ -1310,10 +1310,25 @@ resort such a chat could never compact.
 
 If no plan passes, the answer is "no useful compaction" and the intact
 request goes: the planner no longer abandons protections or advances the cut
-past required groups to make a compaction possible. Overflow recovery uses the
-same requirements. An adopted checkpoint must remove something new, save at
-least the safety margin and measure at most 50% of the usable input, which
-leaves a real gap before the next trigger (before, "just below the trigger").
+past required groups to make a compaction possible. An adopted checkpoint must
+remove something new, save at least the safety margin and measure at most 50%
+of the usable input, which leaves a real gap before the next trigger (before,
+"just below the trigger").
+
+**Overflow recovery keeps the same requirements and one more plan** (Astra,
+2026-11-11). After a gateway's context rejection the ordinary plan is tried
+first. Where it cannot be made, the request has to shrink all the same, so
+recovery alone may keep **only what must stay** with the checkpoint, though
+that passes half the usable input, provided the replacement fits a normal
+request in tokens and in bytes at the whole summary allowance
+(`PreparedCompaction.recoveryOnly`). The completed checkpoint is measured
+again: it must fit the normal output reserve and the byte limit and save the
+safety margin; the half is not asked of it. Nothing required is dropped, and no
+tool runs again. The case: 60,000 tokens of results in flight in a
+128,000-token window can never pass the half (55,000), yet the request and that
+batch with a checkpoint fit easily. A fitting replacement is not yet a
+recovery: the one summary request must itself fit (`compaction_too_large`
+otherwise, nothing sent, the overflow stands).
 
 **Thresholds.** With W the window, M the dispatch safety margin, O the ordinary
 output reserve, G the summary allowance and I the measured appended instruction:
@@ -1331,18 +1346,48 @@ that can be sent.
 
 **A compaction that fails does not stop a turn that can go on.** One policy
 (`automaticCompaction`) serves the threshold, agent delivery and overflow
-recovery. A compaction that cannot be planned, whose one summary request fails,
-is refused, cut or unusable, or whose candidate is not worth adopting leaves the
-context intact, shows on its operation row, and ends automatic attempts **for
-that task** (`suppressedCompactionTask`, saved in the failure record and the
-metadata file, so a Retry, a Resume and a reopen remember; a record without the
-field suppresses nothing). That record is a journal write like any other: if it
-cannot be appended and synchronized the run stops there, and memory says
-"suppressed" only once the journal does. A side chat not saved yet holds it in
-memory and its first journal carries it (`keepNow`); a fork starts without it,
-as it starts without any other operation state. The request then goes as it is and the gateway
-decides; if that task later really overflows, the chat pauses on the overflow
-instead of asking for another summary. Named exceptions still stop the run: a
+recovery. Whatever goes wrong leaves the context intact and shows on the
+operation's row; what follows depends on whether a summary request was sent
+(Astra, 2026-11-11), which the session records as it sends one
+(`compactionDispatched`; an error's code cannot tell, since a local
+`compaction_too_large` and a gateway's rejection share one):
+
+- **Before the request: unavailable for this context, nothing more.** A plan
+  that cannot be made, a budget that cannot hold a summary, a summary request
+  too large to send cost nothing. No failure record or fingerprint is written
+  and the task is not written off. A plan is tried again when its inputs
+  change, including after a context rejection. A working task's required rows
+  change every round: the large batch in flight at one threshold is answered
+  history at the next, and a plan that could not be made around it then fits.
+  Writing the task off at the first refusal (the first form of this rule)
+  stopped such a chat at an overflow it could have compacted away. The same
+  inputs are not planned twice: the refusal is remembered by the replayed
+  context's revision, the task, the request's configuration and resources, and
+  the mode (`CompactionInputs`; threshold and recovery are separate modes,
+  because recovery admits more). Rows that are only shown change none of it.
+  A recovery that cannot be planned leaves the original overflow, once.
+- **After the request: the task's automatic compaction ends.** A summary that
+  fails, is refused, cut or unusable, or whose candidate is not worth adopting
+  was paid for. `suppressedCompactionTask` is saved in the failure record and
+  the metadata file, so a Retry, a Resume and a reopen remember; a record
+  without the field suppresses nothing. That record is a journal write like any
+  other: if it cannot be appended and synchronized the run stops there, and
+  memory says "suppressed" only once the journal does. A side chat not saved
+  yet holds it in memory and its first journal carries it (`keepNow`); a fork
+  starts without it, as it starts without any other operation state. If that
+  task later really overflows, the chat pauses on the overflow instead of
+  asking for another summary.
+- **One paid summary between two replies of the model**, whether at a
+  threshold, for agent mail or after an overflow (`automaticSummarySpent`, set
+  as an automatic summary request is sent, adopted or not). Steering does not
+  clear it; the model's next reply does, and so does a new task, which is the
+  owner's own act and already clears a task's suppression. Without that last
+  rule a chat whose summary was followed by an overflow, and so by no reply,
+  would have no automatic recovery again. It is held in memory only: a
+  relaunch starts without it, and the one-recovery allowance, which is
+  journaled, still bounds an overflow.
+
+The request then goes as it is and the gateway decides. Named exceptions still stop the run: a
 Stop, a cost or accounting hold, a damaged replay group, a journal that refuses
 a write. Mail between agents that cannot fit beside the preferred output
 reserve is delivered when the window takes it; mail the window cannot take stays
@@ -1426,9 +1471,10 @@ memory adoption with no intervening await/fallible step. Ancillary trace/display
 updates follow; Stop after this point keeps the durable checkpoint.
 
 One persisted recovery allowance can surround a failed ordinary context request;
-completed tools are never replayed. A failed automatic compaction suppresses
-further automatic attempts for its task, while an explicit manual retry is a new
-operation. Queued input stays
+completed tools are never replayed. An automatic compaction whose summary
+request was sent and not adopted suppresses further automatic attempts for its
+task (one that could not be planned does not), while an explicit manual retry is
+a new operation. Queued input stays
 queued during a summary and is delivered/recounted at the normal boundary.
 Attempt usage, failures, reasoning and exact request/response captures remain in
 the existing chronological operation history; summary usage never replaces the

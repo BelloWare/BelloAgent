@@ -77,6 +77,10 @@ extension AgentSession {
             do {
                 let lifecycle=try await requestLifecycle(turnID:currentTurnID,purpose:"compaction")
                 let client=self.client, apiKey=self.apiKey, sessionID=id, cacheSessionID=promptCacheSessionID, turnID=currentTurnID
+                // From here the summary is a request that was sent, whatever
+                // becomes of it; its bounded retries are the same attempt.
+                compactionDispatched=true
+                if compactionState["reason"].text != "manual" { automaticSummarySpent=true }
                 // A summary request is cut at a cost-limit pause like any other.
                 let reply=try await abortable { [weak self] in
                     try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,

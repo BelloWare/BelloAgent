@@ -37,6 +37,15 @@ keeps"). The counting below is unchanged; what is compared with it changed:
   output, 0.1.137; a short one is within the item's own allowance.
 - A compaction that cannot be made no longer fails the turn: the request goes
   and the gateway decides, as pi's rule for every other request already said.
+  It costs nothing and ends nothing: a plan is tried again when the chat
+  changes. Only a summary request that was sent and not adopted ends automatic
+  compaction for its task.
+- **After a context rejection** the same `0.50 U` plan comes first; where it
+  cannot be made, only what must stay is kept with the checkpoint, accepted
+  when the replacement fits `U` at the whole summary allowance and the byte
+  limit and saves the safety margin, not by the half.
+- **One automatic summary request** at most between two replies of the model
+  (a new task counts afresh; steering does not).
 
 ## Pi's request sizing, 0.1.89
 

@@ -294,6 +294,10 @@ struct PreparedCompaction: Sendable {
     let replacementTarget: Int?
     /// The framing a checkpoint made while its task worked carries.
     let continuationText: String?
+    /// After a context rejection, where the ordinary plan could not be made:
+    /// only what must stay is kept, and the checkpoint is accepted when it
+    /// fits a normal request and saves the safety margin, not by the half.
+    var recoveryOnly = false
 }
 extension CompactionPlanner {
     static func prepare(frozen: [ChatMessage], profile: Profile, instructions: String, definitions: [ToolDefinition],
@@ -340,11 +344,14 @@ extension CompactionPlanner {
         // `expectedSummary` holds the replacement to its limit with the
         // summary at the length it is asked for instead of its whole
         // allowance: see the last resort below.
-        func acceptable(_ plan: CompactionPlan, expectedSummary: Bool = false) throws -> Bool {
+        // `fitOnly` asks for no more than fitting a normal request, in
+        // tokens and bytes, at the whole allowance: recovery's acceptance.
+        func acceptable(_ plan: CompactionPlan, expectedSummary: Bool = false, fitOnly: Bool = false) throws -> Bool {
             guard !plan.summarized.isEmpty else { return false }
             let request=try body([placeholder]+plan.keptMessages)
             let full=try count([placeholder]+plan.keptMessages,request:request)
             guard full.fits, try request.data().count <= policy.maximumRequestBytes else { return false }
+            if fitOnly { return true }
             var expected=placeholder
             expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
             if manual {
@@ -391,13 +398,24 @@ extension CompactionPlanner {
             // checkpoint is adopted only if it measures within the limit.
             lastResort=cut == least
         }
+        func admitted(_ plan: CompactionPlan) throws -> Bool { try acceptable(plan) || (lastResort && acceptable(plan,expectedSummary:true)) }
+        // After a gateway's context rejection the ordinary plan comes first.
+        // Where it cannot be made, the request has to shrink all the same:
+        // only what must stay is kept with the checkpoint, though that may
+        // pass half the usable input, provided the replacement fits a normal
+        // request at the whole allowance. Nothing required is dropped.
+        var recoveryOnly=false
+        if reason == "context-rejection", !unchanged, try !admitted(plan) {
+            let required=CompactionPlanner.plan(source,cut:min(max(source.required,source.whole),source.body.count))
+            if try acceptable(required,fitOnly:true) { plan=required; recoveryOnly=true }
+        }
         guard !unchanged, !plan.summarized.isEmpty else {
             throw AgentError("compact_unavailable", unchanged ? "Already compacted: nothing has been added since the last compaction." : "Nothing useful to compact while keeping the task in hand and required inputs intact.")
         }
         guard try count([placeholder]+plan.keptMessages).fits else {
             throw AgentError("compact_budget", "Required retained inputs, instructions, tools and the summary allowance cannot fit beside the normal output reserve. Original context is unchanged.")
         }
-        guard try acceptable(plan) || (lastResort && acceptable(plan,expectedSummary:true)) else {
+        guard try recoveryOnly || admitted(plan) else {
             throw AgentError("compact_unavailable", "No useful checkpoint can be planned while preserving required inputs and continuation headroom. Original context is unchanged.")
         }
         guard profile.raw["input"].list.contains("image") || !frozen.contains(where: { $0.content.contains { $0["type"].text == "image" } }) else {
@@ -405,6 +423,6 @@ extension CompactionPlanner {
         }
         let summarizedIDs=(plan.previous.map { [$0.id] } ?? [])+plan.summarized.map(\.id)
         return PreparedCompaction(before:before,profile:summaryProfile,plan:plan,messages:frozen+[try instruction(plan)],replacedIDs:summarizedIDs,fingerprint:attemptKey,
-                                  replacementTarget:manual ? nil : try target(plan,policy.replacementShare),continuationText:continuation)
+                                  replacementTarget:manual || recoveryOnly ? nil : try target(plan,policy.replacementShare),continuationText:continuation,recoveryOnly:recoveryOnly)
     }
 }

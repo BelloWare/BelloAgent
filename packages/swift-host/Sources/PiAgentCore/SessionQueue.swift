@@ -213,6 +213,11 @@ extension AgentSession {
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
         try append(message,record:overrides)
         if let lease = agentLease, lease.inputEvent != nil { try journal?.synchronize(); try await agentCoordinator?.commitTaskDelivery(lease,child:self) }
+        // A new task is the owner's (or the parent's) own act, as a steer is
+        // not: like the task's suppression, the one summary between replies
+        // is counted afresh, so a chat whose last summary was followed by no
+        // reply is not left without recovery for good.
+        if newTask { automaticSummarySpent=false }
         if newTask { try startAgentEpoch(startingFresh:true) }
         // The conversation holds it now; the saved state no longer needs to.
         if delivering?.submission.turnID == submission.turnID { delivering=nil }

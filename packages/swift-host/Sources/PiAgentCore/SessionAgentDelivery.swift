@@ -48,5 +48,5 @@ extension AgentSession {
     /// Whether a compaction may be tried to make room for mail: as before,
     /// whatever the chat's automatic-compaction setting, unless this task's
     /// automatic compaction has already failed.
-    var canCompactForDelivery: Bool { !automaticCompactionSuppressed && canCompact }
+    var canCompactForDelivery: Bool { !automaticCompactionSuppressed && !automaticSummarySpent && canCompact }
 }

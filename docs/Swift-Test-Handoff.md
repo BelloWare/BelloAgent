@@ -351,7 +351,7 @@ and drives it over the wire, as the app does.
   preserving the requested reasoning effort;
 - the context estimate after each compaction is under the threshold;
 - no loop: a bounded number of summary requests, no summary asked again after
-  an answer, and no compaction tried again after one failed;
+  an answer, and no summary requested again for a task after one failed;
 - the run ends idle;
 - the reported cost stays under the cap.
 
