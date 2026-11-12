@@ -280,7 +280,7 @@ class TwentySessionIntegration(unittest.TestCase):
                    'modelId': 'concurrency-fixture', 'api': 'openai-responses',
                    'baseUrl': 'http://127.0.0.1:' + str(self.server.server_port) + '/v1',
                    'contextWindow': 100000, 'maxOutputTokens': 4096, 'modelOutputLimit': 4096,
-                   'routing': {'replayPolicy': 'portable'}}
+                   'routing': {'replayPolicy': 'portable'}, 'reasoningReplay': 'never'}
         self.sessions = []
         for project in range(projects):
             root = self.root / ('project-' + str(project))

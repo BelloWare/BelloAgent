@@ -504,6 +504,10 @@ class NativeIntegration(unittest.TestCase):
         # The catalog ceiling (modelOutputLimit) is what requests carry; maxOutputTokens is the local reserve.
         profile={'id':'p','revision':'1','providerId':'litellm','modelId':model,'api':api,'baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing': routing if routing is not None else {'replayPolicy':'portable'}}
         if profile_headers: profile['headers'] = profile_headers
+        # These cases pin the text-and-tool-calls wire against strict fixtures.
+        # Until 0.1.137 that was what `portable` meant; since 0.1.138 a
+        # connection sends reasoning back unless the owner chose "Never".
+        if profile['routing'].get('replayPolicy') == 'portable': profile['reasoningReplay'] = 'never'
         return self.peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing',**extra},session,fail=fail)
     def submit(self, session='s', text='question'):
         return self.peer.command('turn.submit',{'clientTurnId':str(uuid.uuid4()),'text':text},session)
@@ -732,7 +736,7 @@ class NativeIntegration(unittest.TestCase):
         peer=Peer(self.root,hello={'displayTransfers':True})
         try:
             peer.command('workspace.open',{'cwd':str(self.root),'directory':str(self.root/'sessions'),'captureProtocol':1,'resources':{'codexHome':str(self.root/'codex')}})
-            profile={'id':'p','revision':'1','providerId':'litellm','modelId':'text','api':'openai-responses','baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing':{'replayPolicy':'portable'}}
+            profile={'id':'p','revision':'1','providerId':'litellm','modelId':'text','api':'openai-responses','baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing':{'replayPolicy':'portable'},'reasoningReplay':'never'}
             peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing','path':str(path)},'large')
             marker=peer.command('session.history',{'version':2},'large')
             self.assertEqual(marker.get('_displayTransfer'),1,'a page over the frame limit comes as a transfer')
@@ -1342,7 +1346,7 @@ class NativeIntegration(unittest.TestCase):
                     self.assertEqual(attempts[0]['identity']['effectiveModel'],'fixture-b')
                     request = json.loads(base64.b64decode(self.peer.command('debug.body',{'attemptId':attempts[0]['attemptId'],'body':'request'},session)['bytes']))
                     self.assertEqual(request['model'],alias)
-                    self.assertNotIn('encrypted_content',json.dumps(request.get('input',request.get('messages'))), 'Explicit portable policy omits native reasoning on wire')
+                    self.assertNotIn('encrypted_content',json.dumps(request.get('input',request.get('messages'))), 'A connection set to never send reasoning back omits native reasoning on the wire')
                 self.peer.command('session.close',session=session)
     def test_responses_distinct_timing_boundaries_streaming_and_json(self):
         for api in ['openai-responses']:

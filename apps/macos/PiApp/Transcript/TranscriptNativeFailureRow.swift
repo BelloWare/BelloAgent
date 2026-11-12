@@ -65,6 +65,17 @@ import AppKit
         /// The family paused at its shared cost limit: Raise limit… while the
         /// spend is at it, then (`raised`) Resume; a sub-agent's has neither.
         case costPaused(raised: Bool, child: Bool)
+        /// A provider refused reasoning sent back from earlier replies. The
+        /// message's first line is the title ("{model} can't use the earlier
+        /// reasoning"), the rest what happened; `run`: the stopped run's own
+        /// notice, which carries Continue without earlier reasoning.
+        case reasoningRefused(run: Bool)
+    }
+    /// A refused-reasoning notice's title and body: the helper's message
+    /// carries the title on its first line.
+    private var reasoningWords: (title: String, body: String) {
+        let parts = message.text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return (parts.first.map(String.init) ?? "", parts.count > 1 ? String(parts[1]) : "")
     }
     private var kind: Kind {
         let message = message
@@ -76,13 +87,14 @@ import AppKit
         case SessionDisplay.costPausedChildCode: return .costPaused(raised: false, child: true)
         default: break
         }
+        if message.failureCode == SessionDisplay.reasoningRejectedCode { return .reasoningRefused(run: run) }
         if message.failureCode == SessionDisplay.skillRefreshedCode { return .skillChanged(queued: false) }
         if message.failureCode == SessionDisplay.skillUpdatedCode || message.failureCode == SessionDisplay.skillResumingCode { return .skillChanged(queued: true) }
         guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
         return .costLimit(raised: message.failureCode == SessionDisplay.costLimitRaised, run: run)
     }
     /// The pill the header offers, if any.
-    private enum Offer: Equatable { case retry, continueRun, raise, resume }
+    private enum Offer: Equatable { case retry, continueRun, raise, resume, withoutReasoning }
     private var offer: Offer? {
         guard !inputs.environment.managedChild else { return nil }
         switch kind {
@@ -90,6 +102,8 @@ import AppKit
             // A restart's cut-off run offers Resume, and nothing while one is on its way.
             if message.failureCode == SessionDisplay.resumingCode { return nil }
             return retry ? (message.failureCode == SessionDisplay.interruptedCode ? .resume : .retry) : nil
+        // The one thing offered: not a Retry, which would be refused the same way.
+        case .reasoningRefused(let run): return run ? .withoutReasoning : nil
         case .paused: return message.failureCode == SessionDisplay.pausedCode || message.failureCode == "coordination_limit" ? .resume : nil
         case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
         // Nothing while a Resume is on its way.
@@ -102,6 +116,7 @@ import AppKit
     private var tint: NSColor {
         switch kind {
         case .failure: return TranscriptNSPalette.danger
+        case .reasoningRefused: return TranscriptNSPalette.warning
         case .paused: return TranscriptNSPalette.accent
         case .costLimit(let raised, _): return raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning
         case .skillChanged: return TranscriptNSPalette.accent
@@ -120,6 +135,15 @@ import AppKit
             titleText = "Something went wrong"
             setAccessibilityLabel("Error: \(message.text)")
             setAccessibilityIdentifier(nil)
+        case .reasoningRefused:
+            // A stopped run with a way on, like the cost limit's: amber, not an error's red.
+            card.fill = TranscriptNSPalette.warning.withAlphaComponent(0.09)
+            card.stroke = TranscriptNSPalette.warning.withAlphaComponent(0.35)
+            symbol.show("exclamationmark.circle.fill", size: 15, weight: .semibold)
+            symbol.contentTintColor = tint
+            titleText = reasoningWords.title
+            setAccessibilityLabel(message.text)
+            setAccessibilityIdentifier("reasoning-refused-notice")
         case .paused:
             card.fill = TranscriptNSPalette.accentSoft
             card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
@@ -154,7 +178,9 @@ import AppKit
             setAccessibilityIdentifier("skill-changed-notice")
         }
         title.update(text: titleText, face: Self.titleFace, environment: environment, swiftUILines: true, color: tint)
-        body.update(text: message.text, face: Self.bodyFace, environment: environment, swiftUILines: true)
+        let bodyText: String
+        if case .reasoningRefused = kind { bodyText = reasoningWords.body } else { bodyText = message.text }
+        body.update(text: bodyText, face: Self.bodyFace, environment: environment, swiftUILines: true)
         detail.update(text: message.detail ?? "", face: Self.detailFace, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         configurePill()
     }
@@ -186,6 +212,10 @@ import AppKit
             case .resume:
                 button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "play.fill", font: Self.pillFont, perform: {})
                 button.setAccessibilityIdentifier("resume-run")
+            case .withoutReasoning:
+                button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "play.fill", font: Self.pillFont, perform: {})
+                button.setAccessibilityIdentifier("continue-without-reasoning")
+                button.toolTip = "Send the request again without the earlier reasoning this model’s provider refuses. Your messages, the replies and the tool results are still sent; reasoning from new replies is kept, another model still gets everything, and nothing in the chat is deleted"
             case .raise:
                 // Its own face, with an AppKit press target over it that the
                 // limit editor's popover is anchored to.
@@ -206,6 +236,7 @@ import AppKit
         }()
         switch offer {
         case .retry: button.perform = { actions.retry() }
+        case .withoutReasoning: button.perform = { actions.continueWithoutReasoning?() }
         case .continueRun: button.perform = { actions.costLimit?(.continueRun, nil) }
         case .resume:
             button.perform = { actions.resume() }
@@ -235,6 +266,7 @@ import AppKit
         case .continueRun: return "Continue"
         case .raise: return "Raise limit…"
         case .resume: return "Resume"
+        case .withoutReasoning: return "Continue without earlier reasoning"
         }
     }
 

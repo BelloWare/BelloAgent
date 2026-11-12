@@ -1825,6 +1825,14 @@ struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {
     /// Separate utility-model choice. Nil uses an active catalog mini default,
     /// if supplied; it never silently substitutes the conversation model.
     var miniModelId: String?
+    /// "never": the owner chose that this connection sends no reasoning
+    /// back. Nil is the default, which sends it (and asks when a provider
+    /// refuses it); a pinned route (`routing.replayPolicy`) has its own rule.
+    /// A field of its own because 0.1.137 refuses a connection whose routing
+    /// or advanced settings hold anything it does not know; that build
+    /// ignores this, reads such a connection as portable history, and drops
+    /// the field if it saves the connection.
+    var reasoningReplay: String?
     var isImported: Bool { configuration["source"]?.object != nil }
     var configuration: [String: WireValue] { guard let data = advancedJSON?.data(using: .utf8) else { return [:] }; return (try? JSONDecoder().decode(WireValue.self, from: data).object) ?? [:] }
     var wire: WireValue {
@@ -1832,6 +1840,7 @@ struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {
         value.merge(["id": .string(id), "revision": .string(revision), "providerId": .string(providerId), "modelId": .string(modelId), "api": .string(api), "baseUrl": .string(baseUrl), "contextWindow": .number(Double(contextWindow)), "maxOutputTokens": .number(Double(maxOutputTokens))]) { _, new in new }
         if let modelOutputLimit { value["modelOutputLimit"] = .number(Double(modelOutputLimit)) }
         else { value.removeValue(forKey: "modelOutputLimit") }
+        if reasoningReplay == "never" { value["reasoningReplay"] = .string("never") }
         return .object(value)
     }
 }

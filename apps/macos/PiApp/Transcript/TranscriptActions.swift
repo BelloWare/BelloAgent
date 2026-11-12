@@ -10,6 +10,9 @@ struct TranscriptActions {
     var retry: () -> Void = {}
     /// Goes on with a run that stopped before it finished (`run.continue`).
     var resume: () -> Void = {}
+    /// A provider refused reasoning sent back from earlier replies: asks the
+    /// owner, and on Continue sends the request again without it.
+    var continueWithoutReasoning: (() -> Void)? = nil
     /// Nil for panes that cannot create a child conversation. Rows never
     /// call it; the page's selection controller does (`forwarding`).
     var quoteReply: ((TranscriptQuote) -> Void)? {
@@ -63,14 +66,14 @@ struct TranscriptActions {
     }
     init(inspect: @escaping (String) -> Void = { _ in }, edit: @escaping (String) -> Void = { _ in },
          copyMessage: @escaping (String) -> Void = { _ in }, stop: @escaping () -> Void = {}, retry: @escaping () -> Void = {}, resume: @escaping () -> Void = {},
-         quoteReply: ((TranscriptQuote) -> Void)? = nil, inspectTurn: ((TurnSummary) -> Void)? = nil,
+         continueWithoutReasoning: (() -> Void)? = nil, quoteReply: ((TranscriptQuote) -> Void)? = nil, inspectTurn: ((TurnSummary) -> Void)? = nil,
          skillPressed: ((String, TranscriptSkillUse, NSView) -> Void)? = nil, skillHovered: ((String, TranscriptSkillUse, NSView, Bool) -> Void)? = nil,
          costLimit: ((CostLimitNoticeAction, NSView?) -> Void)? = nil, fork: ((String) -> Void)? = nil,
          switchVersion: ((String, Int) -> Void)? = nil, latestVersion: (() -> Void)? = nil, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil,
          resolveReplyFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil, openSubagent: ((SubagentTarget) -> Void)? = nil,
          inspectSubagent: ((SubagentTarget) -> Void)? = nil, stopSubagent: ((SubagentTarget) -> Void)? = nil, openAgentSource: ((AgentMessageReference) -> Void)? = nil,
          loadImage: (@MainActor (TranscriptMessage, Int, Int) async throws -> TranscriptImageBitmap)? = nil) {
-        self.inspect = inspect; self.edit = edit; self.copyMessage = copyMessage; self.stop = stop; self.retry = retry; self.resume = resume
+        self.inspect = inspect; self.edit = edit; self.copyMessage = copyMessage; self.stop = stop; self.retry = retry; self.resume = resume; self.continueWithoutReasoning = continueWithoutReasoning
         self.inspectTurn = inspectTurn; self.skillPressed = skillPressed; self.skillHovered = skillHovered; self.costLimit = costLimit; self.fork = fork
         self.switchVersion = switchVersion; self.latestVersion = latestVersion; self.openFile = openFile; self.resolveReplyFile = resolveReplyFile
         self.openSubagent = openSubagent; self.inspectSubagent = inspectSubagent; self.stopSubagent = stopSubagent; self.openAgentSource = openAgentSource

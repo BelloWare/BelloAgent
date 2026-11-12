@@ -255,7 +255,16 @@ final class ResponsesSampleTests: HelperTestCase {
         var otherNamespace=RoutingIdentity(profile:try profile())
         otherNamespace.head(["x-litellm-model-name":"unknown/gpt-5.4-mini"])
         otherNamespace.body(["router_model_name":"gpt-5.4-mini"],streaming:false)
-        XCTAssertEqual(otherNamespace.json["status"].text,"conflict","An undeclared provider namespace must not be stripped")
+        // 0.1.138: a provider or gateway path before the same name is the
+        // header's spelling of the model the body names bare (LiteLLM's
+        // `gemini/…`, `anthropic/…`, `openrouter/…`), not a second model.
+        XCTAssertEqual(otherNamespace.json["status"].text,"reported"); XCTAssertEqual(otherNamespace.json["effectiveModel"].text,"gpt-5.4-mini")
+        // Two prefixes of one name are still two routes.
+        otherNamespace.body(["model":"another/gpt-5.4-mini"],streaming:false)
+        XCTAssertEqual(otherNamespace.json["status"].text,"reported","Both are that name behind a prefix")
+        var different=RoutingIdentity(profile:try profile())
+        different.head(["x-litellm-model-name":"unknown/gpt-5.4"]); different.body(["router_model_name":"gpt-5.4-mini"],streaming:false)
+        XCTAssertEqual(different.json["status"].text,"conflict")
     }
 
     func testPinnedReplayAcceptsKnownOpenAINamespaceWithoutIgnoringOtherBindings() throws {

@@ -242,6 +242,8 @@ extension AgentSession {
             // once that message is removed, the run's failure is what is left.
             if errorCode == Self.skillUpdatedCode, !skillUpdateWaiting { value["preflightError"] = JSON(Self.skillUpdateWithdrawn) }
             else { value["errorCode"] = JSON(errorCode) }
+            // The question the app asks about refused reasoning (`SessionReasoning.swift`).
+            if let notice = reasoningRejectionNotice { value["reasoningRejection"] = notice }
         }
         let commandsRevision = "\(displayEpoch):\(commandsGeneration)"
         if params["commandsRevision"].text != commandsRevision { value["commands"] = .array(commands); value["commandsRevision"] = JSON(commandsRevision) }

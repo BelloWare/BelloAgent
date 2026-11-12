@@ -42,6 +42,16 @@ private func valid(_ text: String?, maximum: Int = 256) -> Bool {
 /// same response. This rule is limited to that declared OpenAI namespace.
 private func comparableModel(_ value:String) -> String { value.hasPrefix("openai/") ? String(value.dropFirst(7)) : value }
 
+/// One response's names for the model that served it. LiteLLM's
+/// `x-litellm-model-name` header says `gemini/gemini-3.5-flash-lite`,
+/// `anthropic/claude-haiku-5-5` or `openrouter/google/gemini-3.5-flash-lite`
+/// where the response body says the name without that prefix: a provider or
+/// gateway path before the same name is not another model, and not evidence
+/// that a route changed. Whole path components only.
+private func sameModelName(_ one: String, _ other: String) -> Bool {
+    one == other || one.hasSuffix("/" + other) || other.hasSuffix("/" + one)
+}
+
 struct RoutingIdentity: Sendable {
     let alias: String, api: String, contract: RoutingContract
     private var evidence: [JSON] = []
@@ -103,8 +113,12 @@ struct RoutingIdentity: Sendable {
         // Only this explicitly observed namespace is equivalent to its bare
         // model name. Do not strip arbitrary providers or decode opaque IDs.
         let models=Set(evidence.filter { $0["kind"].text == "model" }.compactMap { $0["value"].text }.map(comparableModel).filter { !$0.isEmpty && $0 != comparableModel(alias) }).sorted()
-        let state=omitted > 0 ? "incomplete" : models.count > 1 ? "conflict" : models.isEmpty ? "unreported" : "reported"
-        return ["requestedAlias":JSON(alias),"status":JSON(state),"effectiveModel":state == "reported" ? JSON(models[0]):.null,
+        // The shortest name is the model's own; the others must be that name
+        // behind a prefix (`sameModelName`), or two models were reported.
+        let bare=models.min { ($0.count,$0) < ($1.count,$1) }
+        let agreed=bare.map { bare in models.allSatisfy { sameModelName($0,bare) } } ?? false
+        let state=omitted > 0 ? "incomplete" : models.isEmpty ? "unreported" : agreed ? "reported" : "conflict"
+        return ["requestedAlias":JSON(alias),"status":JSON(state),"effectiveModel":state == "reported" ? bare.map { JSON($0) } ?? .null:.null,
                 "reportedModels":.array(models.map { JSON($0) }),"evidence":.array(evidence),"omittedEvidence":JSON(omitted),
                 "contractReference":contract.raw["reference"],"replayPolicy":JSON(contract.policy),
                 "boundary":"Gateway-reported identity. Alias echoes, deployment IDs and route groups are not an upstream model name; hidden upstream traffic is unavailable."]
@@ -116,13 +130,15 @@ extension ProviderClient {
         ["profile":profile.binding,"profileId":JSON(profile.id),"configurationRevision":profile.raw["revision"],
          "contractSHA256":JSON(profile.routing.fingerprint)]
     }
-    /// Whether `profile` sends `message`'s provider-only reasoning back as
-    /// it was received: a reply that only that connection can use so.
+    /// Whether a request of `profile` sends `message`'s provider-only
+    /// reasoning back: an encrypted or signed item, or a signature in a call ID.
     static func replaysReasoning(_ message: ChatMessage, profile: Profile) -> Bool {
-        guard message.role == "assistant", let items=(try? replayItems(message, profile: profile)) ?? nil else { return false }
-        let portableTypes: Set<String> = profile.api == "openai-responses" ? ["message","function_call"] : ["text","tool_use"]
-        return items.contains { !portableTypes.contains($0["type"].text ?? "") }
+        guard message.role == "assistant", let replay = try? replay(of: message, profile: profile) else { return false }
+        return assistantItems(message, replay: replay, msgIndex: 0).contains(where: carriesReasoning)
     }
+    /// A pinned route's rule (and, under `portable`, 0.1.137's): which of a
+    /// reply's provider items go back. `replay(of:profile:)` decides for the
+    /// other policies.
     static func replayItems(_ message: ChatMessage, profile: Profile) throws -> [JSON]? {
         guard let items=message.providerItems else { return nil }
         let contract=profile.routing
@@ -141,7 +157,7 @@ extension ProviderClient {
         // the base model seen from an override turn) is outside this pinned
         // route. Replay it portably; its opaque state is retained, not sent.
         if let recorded=message.providerBinding?["profile"]["model"].text, recorded != profile.model { return nil }
-        guard valid(profile.raw["revision"].text, maximum:128), message.providerBinding == binding, identity["status"].text == "reported", identity["effectiveModel"].text.map(comparableModel) == contract.raw["expectedModel"].text.map(comparableModel) else {
+        guard valid(profile.raw["revision"].text, maximum:128), message.providerBinding == binding, identity["status"].text == "reported", let served=identity["effectiveModel"].text, let expected=contract.raw["expectedModel"].text, sameModelName(served,expected) else {
             throw AgentError("opaque_route_changed", "The recorded route is unknown, conflicting or incompatible with the configured fixed model. Native reasoning was not replayed. Choose portable history or a verified compatible route.")
         }
         return items

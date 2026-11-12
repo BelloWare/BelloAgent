@@ -179,6 +179,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
                   !value.apiKey.utf8.contains(where: { $0 < 32 || $0 == 127 }),
                   value.headers.count <= 64 else { throw VaultError.invalid("Save an explicit LiteLLM endpoint and API key. External credential references are unsupported.") }
             try LiteLLMConfiguration.validate(value.profile, headers: value.headers)
+            guard value.profile.reasoningReplay == nil || value.profile.reasoningReplay == "never" else { throw VaultError.invalid("Choose whether this connection sends reasoning back.") }
         }
         if let catalogSources {
             let ids = Set(profiles.map { $0.profile.id })

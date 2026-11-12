@@ -95,6 +95,44 @@ final class RoutingTests: HelperTestCase {
             XCTAssertThrowsError(try ProviderClient.replayItems(message,profile:profile))
         }
     }
+    /// LiteLLM's `x-litellm-model-name` header names a deployment's model with
+    /// its provider prefix while the response body names it bare (0.1.137 took
+    /// that for two models, a conflict, and a pinned connection stopped after
+    /// its first tool call on every route but direct OpenAI). The values are
+    /// those a LiteLLM 1.108.0 gateway returned, 2026-11-12.
+    func testAProviderPrefixInTheHeaderIsTheSameModelAsTheBodysBareName() throws {
+        let seen: [(alias: String, header: String, body: String)] = [
+            ("fx-gemini", "gemini/gemini-3.5-flash-lite", "gemini-3.5-flash-lite"),
+            ("flash-lite", "openrouter/google/gemini-3.5-flash-lite", "google/gemini-3.5-flash-lite"),
+            ("fx-anthropic", "anthropic/claude-haiku-5-5", "claude-haiku-5-5"),
+            ("fx-openai-lax", "openai/gpt-6-luna", "gpt-6-luna")]
+        for route in seen {
+            for expected in [route.body, route.header] {
+                var raw = try fixtureProfile().raw
+                raw["modelId"] = JSON(route.alias)
+                raw["routing"] = ["replayPolicy": "pinned", "expectedModel": JSON(expected), "replayContract": "Gateway fixes a compatible upstream"]
+                let profile = try Profile(raw)
+                var identity = RoutingIdentity(profile: profile)
+                identity.head(["x-litellm-model-name": route.header, "x-litellm-model-group": route.alias])
+                for event in ["response.created", "response.in_progress", "response.completed"] { identity.body(["type": JSON(event), "response": ["model": JSON(route.body)]], streaming: true) }
+                // A non-streamed response's `model` is the gateway's alias: an echo, not a model.
+                identity.body(["model": JSON(route.alias)], streaming: false)
+                XCTAssertEqual(identity.json["status"].text, "reported", route.header)
+                XCTAssertEqual(identity.json["effectiveModel"].text, route.body, "The name without what a gateway puts before it")
+                var message = ChatMessage(role: "assistant", content: [textBlock("answer")])
+                message.providerItems = [["type": "reasoning", "encrypted_content": "opaque"]]
+                message.providerIdentity = identity.json; message.providerBinding = try ProviderClient.replayBinding(profile)
+                XCTAssertEqual(try ProviderClient.replayItems(message, profile: profile), message.providerItems, "\(route.header), expecting \(expected)")
+            }
+        }
+        // Two different models are still a conflict, and a prefix is a whole path component.
+        var identity = RoutingIdentity(profile: try fixtureProfile())
+        identity.head(["x-litellm-model-name": "gemini/gemini-3.5-flash-lite"]); identity.body(["type": "response.completed", "response": ["model": "gpt-6-luna"]], streaming: true)
+        XCTAssertEqual(identity.json["status"].text, "conflict")
+        identity = RoutingIdentity(profile: try fixtureProfile())
+        identity.head(["x-litellm-model-name": "my-gpt-6-luna"]); identity.body(["type": "response.completed", "response": ["model": "gpt-6-luna"]], streaming: true)
+        XCTAssertEqual(identity.json["status"].text, "conflict")
+    }
     func testUnboundedOrMalformedIdentityIsExplicitlyIncomplete() throws {
         var identity=RoutingIdentity(profile:try fixtureProfile())
         identity.body(["model":JSON(String(repeating:"x",count:257))],streaming:false)

@@ -110,6 +110,11 @@ extension AgentSession {
         "invalid_stream", "incomplete_stream", "response_limit", "invalid_tool_calls", "tool_argument_limit"]
     func recoverableCompactionFailure(_ error: Error) -> Bool {
         guard !Task.isCancelled, !costPaused, accountingFailure == nil, let error=error as? AgentError else { return false }
+        // A summary request refused for the reasoning it replayed is the
+        // owner's question (`holdRejectedReasoning`), not a summary that
+        // was paid for and not adopted: it ends the run, not the task's
+        // automatic compaction.
+        guard !handlesRefusedReasoning(error) else { return false }
         return Self.recoverableCompactionFailures.contains(error.code)
     }
     /// One summary paid for and not adopted per task: every later round
@@ -156,6 +161,15 @@ extension AgentSession {
         let inputs=compactionInputs(reason:reason)
         guard unavailableCompaction != inputs else { return false }
         do { try await compactContext(reason:reason); return true }
+        catch where reasoningWidening(error) != nil {
+            // The summary request sent again after the owner's Continue was
+            // refused for the model's own reasoning: that goes too, and the
+            // summary is asked for once more (`widenReasoningWithholding`
+            // allows it once).
+            try widenReasoningWithholding(reasoningWidening(error) ?? [])
+            automaticSummarySpent=false
+            return try await automaticCompaction(reason:reason)
+        }
         catch where recoverableCompactionFailure(error) {
             if compactionDispatched { try suppressAutomaticCompaction() } else { unavailableCompaction=inputs }
             return false
@@ -295,7 +309,7 @@ extension AgentSession {
                 let paused = costPaused || (error as? AgentError)?.code == Self.costLimitCode || error is CancellationError
                 // A failed attempt is one whose summary request was sent; a
                 // plan that could not be made leaves no record.
-                if !Task.isCancelled, !paused, compactionDispatched, let fingerprint=compactionState["sourceFingerprint"].text {
+                if !Task.isCancelled, !paused, compactionDispatched, !handlesRefusedReasoning(error), let fingerprint=compactionState["sourceFingerprint"].text {
                     failedCompactionFingerprint=fingerprint
                     _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":["fingerprint":JSON(fingerprint)]],flush:true)
                 }

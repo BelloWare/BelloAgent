@@ -246,7 +246,7 @@ public struct ProviderClient: ModelClient {
             }
             guard (200..<300).contains(status) else {
                 let detail = (try? JSON.parse(nonSSE)).map { ProviderAccumulator.failure($0).message }
-                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt),failure:ProviderFailure.classify((try? JSON.parse(nonSSE)) ?? .null,status:status),
+                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt),failure:ProviderFailure.classify(body:nonSSE,status:status),
                                  providerMessage:PiErrorText.http(status:status,body:nonSSE))
             }
             if let providerFailure { throw providerFailure }
@@ -269,6 +269,9 @@ public struct ProviderClient: ModelClient {
             result.message.providerIdentity=await traces.identity(attempt)
             result.message.contextUsageBinding=try RequestContextCounter.usageBinding(body,profile:profile)
             result.message.providerBinding=try Self.replayBinding(profile); await traces.usage(attempt,result.usage)
+            // Marked from the profile of this very request, not from the
+            // connection's settings when the reply is stored.
+            if profile.reasoning == .send { result.message.reasoningReplay=true }
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:result.truncated ? "truncated":"completed",modelOutcome:result.truncated ? "truncated":"completed")
             captureFinished = true
