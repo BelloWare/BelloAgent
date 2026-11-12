@@ -1481,37 +1481,38 @@ the existing chronological operation history; summary usage never replaces the
 normal-request context observation. The request inspector recognizes both the
 new appended instruction and historical saved summary formats.
 
-**Encrypted reasoning (0.1.137, in part).** Owner, 2026-11-11: "well, encrypted
+**Encrypted reasoning (0.1.138).** Owner, 2026-11-11: "well, encrypted
 reasoning should be not ignored… unless it got rejected by litellm due to model
 switch, which then we need user confirmation to proceed with previous encrypted
 reasoning removed or something like that, while keep new encrypted reasoning".
+The whole contract is `docs/Reasoning-Replay.md`; in short:
 
-What holds now. Every Responses request of a reasoning model asks for
-`reasoning.encrypted_content`, and a reply's provider items are journaled as
-received with the route that produced them (`providerItems`,
-`providerBinding`, `providerIdentity`). Whether they are sent again is the
-connection's replay policy (`ProviderClient.replayItems`): a **pinned** route
-replays them byte for byte, each before the calls or text it led to; a
-compaction changes nothing in that, since it keeps whole rows: the summary
-request, the request after a compaction and the rounds a fallback keeps all
-carry their reasoning, and a summarized round takes its reasoning with it. In
-0.1.137 a replayed reasoning item is also **counted** where no reply's usage has
-measured it yet (`RequestContextCounter.inputTokens`: its ciphertext's length
-over four, an upper bound), so the fallback and the 50% target see it, and the
-32 MiB check sees its bytes.
-
-What does not hold yet. Reasoning is still left out without a word in three
-cases the owner's rule covers: a connection whose policy is **portable** (the
-onboarding default) never replays it; a reply written before the chat moved to
-another saved connection, or under a per-turn model override, is replayed
-portably (`Routing.swift`, `Profile.overriding`); and an unset policy refuses
-the request (`opaque_replay_policy`) instead of asking. Replaying by default
-needs the other half of the rule at the same time: recognising the gateway's
-rejection of earlier reasoning after a model or route change, pausing with a
-question (the app's `ChatQuestion` confirmation, as the connection switch asks
-before reasoning is left behind), and a durable "reasoning before this point is
-no longer replayed" record. That is not in this release; nothing here strips
-reasoning that was replayed before.
+- Every Responses request of a reasoning model asks for
+  `reasoning.encrypted_content`, and a reply's provider items are journaled as
+  received. A connection **sends reasoning back by default**
+  (`Profile.reasoning`): a reply stored from 0.1.138 on is marked and its
+  reasoning goes with every later request, also after a model switch, a
+  per-turn override or a connection move. A reply without the mark goes
+  exactly as 0.1.137 sent it. "Never" and a pinned route are the owner's
+  explicit choices. Until 0.1.137 the default (`portable`) sent none, and an
+  unset policy refused the request.
+- A compaction changes nothing in that: it keeps whole rows, the summary
+  request is built by the same projection, and a replayed reasoning item is
+  counted where no reply's usage has measured it.
+- A provider's refusal of that reasoning (`ReasoningRejection`: substrings of
+  the provider's text as LiteLLM passes it on, in an HTTP 400 body or a failure
+  frame after HTTP 200) ends the run as the failure `reasoning_rejected`, whose
+  notice says what happened ("{model} can't use the earlier reasoning") and
+  carries one button, **Continue without earlier reasoning**, which acts at
+  once: no sheet, nothing by itself, there again after a relaunch. Continue
+  is saved for the model that refused: the request goes again without the
+  reasoning other models wrote; refused again, once more without its own,
+  without asking again; then it is the provider's ordinary error. A model
+  that never refused gets everything, and what is made afterwards is sent
+  and asked about again if refused. No tool runs again; stored history is
+  never rewritten. The same design as Bello Hub's.
+- A pinned route compares model names without what a gateway puts before them
+  (`gemini/gemini-3.5-flash-lite` and `gemini-3.5-flash-lite` are one model).
 
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and

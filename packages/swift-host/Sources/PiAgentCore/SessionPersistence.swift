@@ -7,8 +7,13 @@ extension AgentSession {
     /// A side's starting context and origin. The origin also names the tools
     /// this chat's requests offer and the prompt cache they join, which the
     /// side's requests keep (SessionSide.swift).
-    public func sideSeed() -> (messages:[ChatMessage], info:JSON) { (boundary,["parentSessionId":JSON(id),"cutoffEntryId":boundary.last.map { JSON($0.id) } ?? .null,"contextRevision":JSON(sha256(Data(boundary.map(\.id).joined(separator:"\n").utf8))),"capturedAt":JSON(isoNow()),"instructionRevision":appliedRevision.map { JSON($0) } ?? .null,
-        "parentToolMode":JSON(offersReadOnlyTools ? "read-only" : "editing"),"cacheSessionId":JSON(promptCacheSessionID)]) }
+    public func sideSeed() -> (messages:[ChatMessage], info:JSON) {
+        var info: JSON=["parentSessionId":JSON(id),"cutoffEntryId":boundary.last.map { JSON($0.id) } ?? .null,"contextRevision":JSON(sha256(Data(boundary.map(\.id).joined(separator:"\n").utf8))),"capturedAt":JSON(isoNow()),"instructionRevision":appliedRevision.map { JSON($0) } ?? .null,
+        "parentToolMode":JSON(offersReadOnlyTools ? "read-only" : "editing"),"cacheSessionId":JSON(promptCacheSessionID)]
+        // What this chat sends without its reasoning, the chat started from it does too.
+        if let withheld=inheritableReasoningWithheld { info["reasoningWithheld"] = Self.saved(withheld.mapValues(Set.init)) }
+        return (boundary,info)
+    }
     /// Clone the complete retained journal without replaying a queued command.
     /// A running source contributes its latest complete model/tool boundary;
     /// later source records remain inspectable in the clone's original history.
@@ -380,6 +385,9 @@ extension AgentSession {
         if queueEditRevision > 0 { value["queueEditSequence"]=JSON(queueEditSequence); value["queueEditRevision"]=JSON(queueEditRevision) }
         if queueEditForgottenRevision > 0 { value["queueEditForgottenRevision"]=JSON(queueEditForgottenRevision) }
         if errorCode == Self.skillUpdatedCode, let skillUpdatedTurnID { value["skillUpdatedTurnId"]=JSON(skillUpdatedTurnID) }
+        // The owner's question about refused reasoning, and the answer in force.
+        if errorCode == Self.reasoningRejectedCode, let reasoningRejection { value["reasoningRejection"]=reasoningRejection }
+        if let reasoningRetry { value["reasoningRetry"]=reasoningRetry }
         // Absent unless paused at the family's cost limit (`pauseAtCostLimit`).
         if costPaused || costResumePending { value["costPaused"] = true }
         if costPendingCompaction { value["costPendingCompaction"] = true }
@@ -474,6 +482,11 @@ extension AgentSession {
             // A task whose automatic compaction failed while the side had no
             // journal: a reopen from this journal alone must not try again.
             if let root=suppressedCompactionTask { try prepared.append(suppressionRecord(root),flush:false) }
+            // What a model that refused is no longer sent, answered while the
+            // side had no journal: a reopen must not send it again.
+            for (route,replies) in reasoningWithheld.sorted(by: { $0.key < $1.key }) {
+                try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.reasoningWithheld),"data":["route":JSON(route),"replies":.array(replies.sorted().map(JSON.string))]],flush:false)
+            }
             // What the side spent before it was kept goes with it.
             // Preserve physical identities and usage across Keep. A carried
             // aggregate alone would lose deduplication and token accounting.

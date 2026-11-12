@@ -62,7 +62,7 @@ extension AgentSteeringCoordinator {
             let prefix = AgentCodexContext(cacheSessionID:await owner.promptCacheSessionID,resources:env.resources,tools:offered.filter { selected.contains($0.name) || SubagentCodexContract.names.contains($0.name) })
             let link = SubagentLink(delegationID:UUID().uuidString,childSessionID:UUID().uuidString,budgetOwnerSessionID:owner.id,call:key,parentTurnID:env.turnID,parentExecutionID:env.executionID,parentAttemptID:env.parentAttemptID)
             plan = SubagentPlan(origin:.init(link:link,description:spec.description,model:grant,tools:selected.sorted(),readOnly:env.readOnly,resourceRevision:env.resources.revision,mcpPolicy:env.mcpPolicy,frozenResources:env.resources,taskName:name,forkTurns:fork,codexContext:prefix),task:spec.task,resultMessageID:UUID().uuidString)
-            if fork == "all" { let seed = await owner.codexSeed(); plan?.forkSeed = seed.reference; seedMessages = seed.messages }
+            if fork == "all" { let seed = await owner.codexSeed(); plan?.forkSeed = seed.reference; seedMessages = seed.messages; plan?.origin.reasoningWithheld = await owner.inheritableReasoningWithheld }
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
             turn?.effort = grant.thinkingLevel; turn?.taskName = name; turn?.forkTurns = fork; turn?.sender = sender
             let payload = SubagentCodexContract.handoff(name:name,fork:fork) + "\n\n" + spec.task

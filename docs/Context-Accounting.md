@@ -47,6 +47,16 @@ keeps"). The counting below is unchanged; what is compared with it changed:
 - **One automatic summary request** at most between two replies of the model
   (a new task counts afresh; steering does not).
 
+## Reasoning in a request, 0.1.138
+
+A connection sends a reply's reasoning back by default, for replies stored from
+0.1.138 on (`docs/Reasoning-Replay.md`). Those items are part of the request
+and count as 0.1.137 already counts replayed reasoning: by the last reply's
+reported usage, and at characters over four where none has measured them. A
+reply whose reasoning a model is no longer sent ("Continue without earlier
+reasoning") counts without it, in the request, the summary request and the
+plan alike, since all three read the same projection.
+
 ## Pi's request sizing, 0.1.89
 
 Every context decision now uses pi 0.85.1's figures, and the older sections below are history:

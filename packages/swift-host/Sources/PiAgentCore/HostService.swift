@@ -1012,7 +1012,8 @@ public actor NativeHostService {
             var replies=0
             if let previous, previous.id != target.id {
                 let context=try AgentSession.replay(journal,url:url,id:id,binding:before,spendTracked:false,resume:true).context
-                replies=context.filter { ProviderClient.replaysReasoning($0, profile: previous) }.count
+                // What the connection left sends reasoning of and the new one will not.
+                replies=context.filter { ProviderClient.replaysReasoning($0, profile: previous) && !ProviderClient.replaysReasoning($0, profile: target) }.count
             }
             return ["needsConfirmation":JSON(replies > 0),"replies":JSON(replies),"rebinds":JSON(before != target.binding)]
         }

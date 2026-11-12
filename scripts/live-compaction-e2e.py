@@ -621,6 +621,11 @@ class Session:
         profile = {"id": "live-e2e", "revision": "1", "providerId": "litellm", "modelId": self.cfg.model, "api": "openai-responses",
                    "baseUrl": self.run.base_url, "contextWindow": self.cfg.window, "maxOutputTokens": OUTPUT_BUDGET,
                    "reasoning": True, "thinkingLevel": self.cfg.thinking, "routing": {"replayPolicy": "portable"}}
+        # The fixture gateway pins the text-and-tool-calls wire, which since
+        # 0.1.138 is a connection set to never send reasoning back. A live run
+        # uses the default, as the app does: reasoning goes back.
+        if self.cfg.mode == "fixture":
+            profile["reasoningReplay"] = "never"
         if self.cfg.limit:
             profile["modelOutputLimit"] = self.cfg.limit
         return profile

@@ -17,6 +17,8 @@ final class ManualCompactionTests: XCTestCase {
         var profile = ProfileRecord(); profile.baseUrl = "http://127.0.0.1:\(port)/v1"; profile.modelId = "connection-default"
         profile.contextWindow = 100000; profile.maxOutputTokens = 4096
         profile.advancedJSON = #"{"reasoning":true,"thinkingLevel":"low","routing":{"replayPolicy":"portable"}}"#
+        // The fixture gateway pins the text-and-tool-calls wire: since 0.1.138 that is a connection set to never send reasoning back.
+        profile.reasoningReplay = "never"
         let vault = ConfigurationVault(storage:MemoryVaultStorage()), saved = profile
         _ = try await vault.update(expectedRevision:0) {
             $0.workspaces = [workspace]; $0.profiles = [.init(profile:saved,apiKey:"synthetic-manual-key")]

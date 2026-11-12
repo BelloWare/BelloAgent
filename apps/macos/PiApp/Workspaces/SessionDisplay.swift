@@ -356,6 +356,13 @@ struct TranscriptVersionView: Equatable, Sendable {
                 // button goes while a Resume is on its way.
                 row.failureCode = resuming ? Self.skillResumingCode : Self.skillUpdatedCode; row.detail = nil
             }
+            if failureCode == Self.reasoningRejectedCode {
+                // The first line is the notice's title; the way back and the
+                // provider's own words go under the body, quietly.
+                row.failureCode = Self.reasoningRejectedCode
+                if let notice = reasoningRejection { row.text = notice.text }
+                row.detail = [reasoningRejection?.detail, paused ? "Queued follow-ups stay paused." : nil].compactMap { $0 }.joined(separator: "\n").nilIfEmpty
+            }
             if failureCode == Self.costLimitCode {
                 // The run stopped at the chat's cost limit: the notice offers to
                 // raise it, and once it is above the spend, to continue.
@@ -400,6 +407,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The helper's code for a run stopped, or a message refused, at the
     /// chat's cost limit; and the notice's state once the limit is raised.
     nonisolated static let costLimitCode = "cost_limit", costLimitRaised = "cost_limit_raised"
+    /// The run stopped because a provider refused reasoning sent back from
+    /// earlier replies: the notice says so and its button continues without
+    /// it (`WorkspaceModel.continueWithoutEarlierReasoning`).
+    nonisolated static let reasoningRejectedCode = "reasoning_rejected"
     /// The family's pause at its shared limit: held (Raise limit…), raised
     /// (Resume), a Resume on its way, and a sub-agent's (no action of its own).
     nonisolated static let costPausedCode = "cost_paused", costPausedRaisedCode = "cost_paused_raised",
@@ -578,6 +589,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
     /// The helper's code for the run failure shown; `cost_limit` draws the stop notice.
     @Published var failureCode: String? { didSet { if failureCode != oldValue { publishTranscript() } } }
+    /// What the helper says of a refusal of earlier reasoning: the notice's
+    /// words and the identity an answer is given for. Nil for a failure read
+    /// from the journal before the helper has the chat, whose message then
+    /// carries the same title and body.
+    var reasoningRejection: ReasoningRejectionNotice?
     @Published var queuePaused = false { didSet { if queuePaused != oldValue { publishTranscript() } } }
     /// Work here stopped at the family's shared cost limit and waits for
     /// Resume (the helper's `costPaused`). Raising the limit resumes nothing.
@@ -643,6 +659,8 @@ struct TranscriptVersionView: Equatable, Sendable {
             if failureCode != code { failureCode = code }
             if failureMessage != failure { failureMessage = failure }
         }
+        let refusal = code == Self.reasoningRejectedCode ? ReasoningRejectionNotice(snapshot["reasoningRejection"]) : nil
+        if reasoningRejection != refusal { reasoningRejection = refusal }
     }
     /// A run whose helper disappeared leaves half-streamed rows behind that
     /// nothing will ever finish. They must stop presenting themselves as a live

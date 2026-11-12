@@ -253,6 +253,27 @@ public actor AgentSession {
     /// The task whose automatic compaction failed: none is tried again for
     /// it, also after a Retry, a Resume or a reopen (`suppressAutomaticCompaction`).
     var suppressedCompactionTask: String?
+    /// The replies whose reasoning is no longer sent to a model that refused
+    /// it: the owner's answer (`withholdReasoning`), kept for that model on
+    /// that connection (`reasoningRouteKey`). A model that never refused gets
+    /// everything, so switching back to the model that made the reasoning
+    /// recovers it; reasoning of later replies is stored and sent as always.
+    /// From the journal's `reasoningWithheld` records, and carried by the checkpoint.
+    var reasoningWithheld: [String: Set<String>] = [:]
+    /// A run that ended at a provider's refusal of earlier reasoning: what
+    /// the owner is asked about (`holdRejectedReasoning`). Saved with the
+    /// failed run's state.
+    var reasoningRejection: JSON?
+    /// The refusal the owner answered with Continue, for the model that
+    /// refused (`id`, `route`, and `own`: whether that model's own reasoning
+    /// has been left out as well). While it stands that model's request is
+    /// sent at most once more, without its own reasoning too, and then its
+    /// refusal is the run's ordinary failure; a reply of the model, or a new
+    /// task, ends it. Another model's refusal is a question of its own.
+    var reasoningRetry: JSON?
+    /// The retry after Continue checks the compaction threshold on its first
+    /// request, which an ordinary retry of a failed request skips.
+    var recheckCompactionOnRetry = false
     /// Whether the compaction in hand has sent its summary request: what
     /// tells a plan that could not be made, which costs nothing, from a
     /// summary that was paid for. An error's code cannot (a local
@@ -451,6 +472,7 @@ public actor AgentSession {
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
         failedCompactionFingerprint=replayed.failedCompactionFingerprint; suppressedCompactionTask=replayed.suppressedCompactionTask; parentInfo=replayed.parentInfo
+        reasoningWithheld=replayed.reasoningWithheld
         // Seed only the physical chat's pre-ledger history, before adopting
         // saved-side charges. Otherwise side recovery would mark the ledger
         // tracked and suppress the chat's own legacy cost seed.
@@ -593,6 +615,8 @@ public actor AgentSession {
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
                 skillUpdatedTurnID=saved["skillUpdatedTurnId"].text
+                if errorCode == Self.reasoningRejectedCode, saved["reasoningRejection"].isObject { reasoningRejection=saved["reasoningRejection"] }
+                if saved["reasoningRetry"].isObject { reasoningRetry=saved["reasoningRetry"] }
             }
         }
         if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }

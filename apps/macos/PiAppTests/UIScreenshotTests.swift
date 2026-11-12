@@ -74,6 +74,8 @@ final class UIScreenshotTests: XCTestCase {
             profile.name = alias == "fixture-fast" ? "Team fast · Responses" : "Team router · Responses"
             profile.miniModelId = "fixture-fast"  // titles and suggestions require a mini model
             profile.advancedJSON = "{\"routing\":{\"replayPolicy\":\"portable\",\"reference\":\"Synthetic UI gateway accounting contract v1\",\"cacheHeader\":\"x-fixture-cache\"}}"
+            // The fixture gateway pins the text-and-tool-calls wire: since 0.1.138 that is a connection set to never send reasoning back.
+            profile.reasoningReplay = "never"
             return VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")
         }
         let vault = ConfigurationVault(storage: MemoryVaultStorage())
