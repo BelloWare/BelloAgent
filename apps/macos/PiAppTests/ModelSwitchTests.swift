@@ -189,8 +189,10 @@ final class ModelSwitchTests: XCTestCase {
         _ = await catalog.load(profile: first) { XCTFail("A fresh cache must not read the credential"); return "key" }
         calls = await counter.calls; XCTAssertEqual(calls, 1)
         clock.date = clock.date.addingTimeInterval(601)
-        _ = await catalog.load(profile: first) { "key" }
-        calls = await counter.calls; XCTAssertEqual(calls, 2, "An expired list is fetched again")
+        let inHand = await catalog.load(profile: first) { "key" }
+        XCTAssertEqual(inHand, results.0, "An expired list answers as it is")
+        try await eventually("An expired list is fetched again, behind the list in hand", until: { await counter.calls == 2 })
+        try await eventually("The read behind never finished") { !catalog.entry(for: "one").loading }
         _ = await catalog.load(profile: first, force: true) { "key" }
         calls = await counter.calls; XCTAssertEqual(calls, 3)
         let failed = await catalog.load(profile: second) { "bad" }

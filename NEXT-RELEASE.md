@@ -2,6 +2,10 @@
 
 **Released 2026-11-11:** 0.1.137 (build 141, tag `v0.1.137`) is the latest release: compaction by task, and a faster model list; record `docs/validation/Bello-Agent-0.1.137-2026-11-11.md`. 0.1.136 (build 140) was a hotfix: Gemini tool calls, and turns that survive compaction.
 
+## 0.1.138 (hotfix)
+
+- [ ] CATALOG-KEEP: the model list is there at once. Owner, 2026-11-12: "Do both for catalog loading". (1) A saved connection's last good custom catalog is kept on disk (`ModelCatalogs/` in the app's state folder; models and a digest of their source, never the address, a key or a header), so a launch has the models, their limits and the picker before the catalog's address answers, and a fresh read replaces it behind; a failed read keeps it and is reported as a failed refresh always was. It belongs to one connection and one source, and goes with a deleted connection. (2) A list older than five minutes is used as it is and read again behind; only Refresh, or a connection with no list at all, waits. An open picker takes the fresh list in place. A turn already sent and a chat's chosen limits do not change when a refresh lands. `CatalogKeepAndRefreshTests`; contract in `docs/Model-Catalog.md`, "The list in hand". Not released yet: the lead releases.
+
 ## 0.1.137
 
 - [x] COMPACT-3: compaction keeps the task in hand whole; the 20,000-token recent tail is gone. Owner, 2026-11-11: "remove the cap directly, and you and astra figure what else to do, and then release a new version". Only earlier tasks are summarized; at send, the exchange before the message stays; a task too large keeps what must stay and its newest rounds. A full chat compacts before a task starts (70% of the usable input), not a round or two into it. A plan that cannot be made costs nothing and is tried again when the chat changes; only a summary that was requested and not adopted ends automatic compaction for its task; after a provider's context rejection, what must stay is kept with the checkpoint though it passes the half; at most one automatic summary between two replies. Chats and checkpoints from earlier versions read as before. Contract: `Design.md`, "What a compaction keeps".

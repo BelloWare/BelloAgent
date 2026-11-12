@@ -83,10 +83,16 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
 }
 
 /// Cached model catalogs keyed by profile id. Connections use the bundled
-/// Bello catalog unless an explicit catalog URL replaces it. Remote catalogs
-/// refresh lazily every five minutes when a picker next asks. Concurrent
+/// Bello catalog unless an explicit catalog URL replaces it. Concurrent
 /// requests for one profile share a single fetch, and a failed refresh keeps
 /// the last list usable beside its error.
+///
+/// A list in hand is used (owner, 2026-11-12: "Do both for catalog
+/// loading"). A custom catalog older than five minutes is read again behind
+/// the callers that asked, and a saved connection's last good list is kept on
+/// disk (`ModelCatalogStore`), so a launch has it at once and a fresh read
+/// replaces it behind. Only Refresh, or a connection with no list at all,
+/// waits for the catalog's address.
 @MainActor final class ModelCatalog: ObservableObject {
     struct Entry: Equatable, Sendable {
         var models: [String] = []
@@ -116,7 +122,9 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     private let fetchCatalog: FetchCatalog
     private let now: @Sendable () -> Date
     private struct Listing: Sendable { var models: [String]; var descriptors: [ModelDescriptor]; var source: String }
-    private struct Fetch { var token: UUID; var task: Task<Void, Never> }
+    /// One read of a connection's list: first what is kept on disk, when
+    /// nothing is in hand (`restore`), then its source (`task`, the whole).
+    private struct Fetch { var token: UUID; var task: Task<Void, Never>; var restore: Task<Void, Never>? }
     private var inFlight: [String: Fetch] = [:]
     /// What a listing depends on: where the list comes from, and the saved
     /// revision (every save makes a new one, and the key may have changed with
@@ -131,10 +139,15 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     }
     private var cachedSources: [String: Source] = [:]
 
+    /// Where each saved connection's last good custom catalog is kept; nil keeps nothing.
+    private let store: ModelCatalogStore?
+
     init(catalogTTL: TimeInterval = 300, now: @escaping @Sendable () -> Date = { Date() },
          readBundled: @escaping ReadBundled = { try ModelCatalogEndpoint.bundled() },
-         fetchCatalog: @escaping FetchCatalog = { url, key in try await ModelCatalogEndpoint().fetch(url: url, key: key) }) {
+         fetchCatalog: @escaping FetchCatalog = { url, key in try await ModelCatalogEndpoint().fetch(url: url, key: key) },
+         store: ModelCatalogStore? = nil) {
         self.catalogTTL = catalogTTL; self.now = now; self.readBundled = readBundled; self.fetchCatalog = fetchCatalog
+        self.store = store
     }
 
     func entry(for profileID: String) -> Entry { entries[profileID] ?? Entry() }
@@ -152,9 +165,23 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
         !(profile.catalogUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// A list a caller can use now: read, or restored from what was kept, even
+    /// when a later read failed. A failure with no list at all is not one.
+    private static func inHand(_ entry: Entry) -> Bool {
+        entry.fetchedAt != nil && (entry.error == nil || !entry.descriptors.isEmpty)
+    }
+    /// A connection still being added or edited (`WorkspaceModel.draftListing`)
+    /// is not a saved connection: nothing is kept for it.
+    private static func kept(_ profile: ProfileRecord) -> Bool { !profile.id.hasPrefix("draft:") }
+    private static func keptSource(_ profile: ProfileRecord) -> String {
+        ModelCatalogStore.source(api: profile.api, baseUrl: profile.baseUrl, catalogUrl: profile.catalogUrl)
+    }
+
     /// Lists models for a profile, reusing a fresh cache or an in-flight fetch.
     /// `credential` resolves the gateway key lazily so nothing leaves Keychain
-    /// while the cache is warm.
+    /// while the cache is warm. A caller with a list in hand gets it at once,
+    /// and a read that is due runs behind it; `force` (Refresh) waits for the
+    /// fresh list, as a caller with nothing in hand does.
     @discardableResult
     func load(profile: ProfileRecord, force: Bool = false, credential: @escaping @Sendable () async throws -> String) async -> [String] {
         let id = profile.id
@@ -164,23 +191,36 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
         if !force, current.error == nil, current.fetchedAt != nil,
            !usesCatalog || current.isFresh(now: now(), ttl: catalogTTL) { return current.models }
         if !force, current.error != nil, current.isFresh(now: now(), ttl: Self.failureRetry) { return current.models }
-        // Every caller reads the entry the fetch wrote. A caller that joined
-        // the fetch used to take its list and return, and could run before the
-        // caller that started it had written the entry: title suggestions then
-        // read the mini model's limits from an entry still loading, and asked
-        // without the catalog's output limit.
+        // Every caller that waits reads the entry the fetch wrote. A caller
+        // that joined the fetch used to take its list and return, and could
+        // run before the caller that started it had written the entry: title
+        // suggestions then read the mini model's limits from an entry still
+        // loading, and asked without the catalog's output limit.
         if let running = inFlight[id] {
-            await running.task.value
-            return entry(for: profile).models
+            return await joined(running, profile: profile, force: force)
         }
+        // A failure that left no list is not a list in hand: its time only
+        // held the retry back, and whoever asks now waits for this read.
+        if !Self.inHand(current) { current.fetchedAt = nil }
         current.source = usesCatalog ? "catalog" : "bundled"
         current.loading = true; current.error = nil; entries[id] = current
         let base = profile.baseUrl, api = profile.api, readBundled = readBundled, fetchCatalog = fetchCatalog
         let catalogURL = profile.catalogUrl.flatMap { try? ModelCatalogEndpoint.url($0) }
         let token = UUID()
+        // Nothing in hand for a saved connection's own catalog: the last good
+        // list it read, if one is kept for this very source.
+        var restore: Task<Void, Never>?
+        if usesCatalog, Self.kept(profile), !Self.inHand(current), let store {
+            let source = Self.keptSource(profile)
+            restore = Task {
+                let saved = await store.read(connection: id, source: source)
+                self.restored(saved, id: id, token: token, profile: profile)
+            }
+        }
         // The fetch writes its own result, so the entry is complete before
         // anyone awaiting it resumes.
-        let task = Task {
+        let task = Task { [restore] in
+            await restore?.value
             let result: Result<Listing, Error>
             do {
                 result = .success(try await Self.listing(usesCatalog: usesCatalog, catalogURL: catalogURL, base: base, api: api,
@@ -188,9 +228,34 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
             } catch { result = .failure(error) }
             self.publish(result, id: id, token: token, profile: profile, usesCatalog: usesCatalog)
         }
-        inFlight[id] = Fetch(token: token, task: task)
-        await task.value
+        let fetch = Fetch(token: token, task: task, restore: restore)
+        inFlight[id] = fetch
+        return await joined(fetch, profile: profile, force: force)
+    }
+
+    /// What a caller gets from a read under way: the list in hand, when there
+    /// is one and it did not ask for a fresh one; the kept list, once that is
+    /// read; otherwise what the read brings.
+    private func joined(_ fetch: Fetch, profile: ProfileRecord, force: Bool) async -> [String] {
+        if !force {
+            if Self.inHand(entry(for: profile)) { return entry(for: profile).models }
+            await fetch.restore?.value
+            if Self.inHand(entry(for: profile)) { return entry(for: profile).models }
+        }
+        await fetch.task.value
         return entry(for: profile).models
+    }
+
+    /// The kept list becomes the list in hand while its source is read: with
+    /// the time it was read, so nothing takes it for a fresh one.
+    private func restored(_ saved: ModelCatalogStore.Saved?, id: String, token: UUID, profile: ProfileRecord) {
+        guard let saved, inFlight[id]?.token == token, cachedSources[id] == Source(profile) else { return }
+        var updated = entry(for: id)
+        guard !Self.inHand(updated) else { return }
+        updated.descriptors = saved.descriptors; updated.models = saved.descriptors.filter { !$0.deprecated }.map(\.id)
+        updated.source = "catalog"; updated.fetchedAt = saved.savedAt; updated.error = nil
+        entries[id] = updated
+        keptLists[id] = saved.descriptors
     }
 
     private static func listing(usesCatalog: Bool, catalogURL: URL?, base: String, api: String, credential: @escaping @Sendable () async throws -> String,
@@ -220,6 +285,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
         case .success(let listing):
             updated.models = listing.models; updated.descriptors = listing.descriptors; updated.source = listing.source
             updated.fetchedAt = now(); updated.error = nil
+            keep(listing.descriptors, profile: profile, usesCatalog: usesCatalog)
         case .failure(let error):
             // No "cancelled" case: the only canceller is `invalidate`, which
             // clears this entry and its in-flight token, so such a result is
@@ -239,7 +305,41 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     }
 
     func invalidate(profileID: String) {
-        inFlight[profileID]?.task.cancel(); inFlight[profileID] = nil; entries[profileID] = nil; cachedSources[profileID] = nil
+        inFlight[profileID]?.task.cancel(); inFlight[profileID]?.restore?.cancel()
+        inFlight[profileID] = nil; entries[profileID] = nil; cachedSources[profileID] = nil
+    }
+
+    /// What is on disk for each connection, as far as this run knows, so an
+    /// unchanged list is not written again at every refresh.
+    private var keptLists: [String: [ModelDescriptor]] = [:]
+    /// Writes to the store one after another, in the order they were asked for.
+    private var keeping: Task<Void, Never>?
+
+    /// A saved connection's own catalog, read whole: kept for the next launch.
+    private func keep(_ descriptors: [ModelDescriptor], profile: ProfileRecord, usesCatalog: Bool) {
+        guard usesCatalog, Self.kept(profile), let store, keptLists[profile.id] != descriptors else { return }
+        keptLists[profile.id] = descriptors
+        let id = profile.id, source = Self.keptSource(profile), date = now()
+        stored { await store.save(descriptors, connection: id, source: source, at: date) }
+    }
+    private func stored(_ work: @escaping @Sendable () async -> Void) {
+        keeping = Task { [keeping] in await keeping?.value; await work() }
+    }
+
+    /// A deleted connection: its list goes, in memory and where it is kept.
+    func forget(profileID: String) {
+        invalidate(profileID: profileID)
+        keptLists[profileID] = nil
+        guard let store else { return }
+        stored { await store.remove(connection: profileID) }
+    }
+
+    /// The saved connections, so lists kept for any other (deleted by another
+    /// save, an import or an earlier version of the app) are dropped.
+    func keepStored(for profileIDs: Set<String>) {
+        guard let store else { return }
+        for id in keptLists.keys where !profileIDs.contains(id) { keptLists[id] = nil }
+        stored { await store.prune(keeping: profileIDs) }
     }
 }
 
