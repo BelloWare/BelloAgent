@@ -86,10 +86,22 @@ actor ModelCatalogStore {
         }
     }
 
+    /// The rules the catalog's own parser applies to a list (`ModelCatalogEndpoint.parse`):
+    /// a kept file is read back under the same ones, so a damaged file can no more
+    /// bring an impossible limit into a request than a catalog address can.
     private static func valid(_ descriptors: [ModelDescriptor]) -> Bool {
         guard descriptors.count <= maximumModels else { return false }
+        let limits = ModelCatalogEndpoint.Limits()
+        let efforts = Set(ThinkingLevel.allCases.filter { $0 != .profileDefault && $0 != .default }.map(\.rawValue))
         var seen = Set<String>()
-        return descriptors.allSatisfy { TurnOverrides.normalizedModel($0.id) == $0.id && seen.insert($0.id).inserted }
+        return descriptors.allSatisfy { model in
+            TurnOverrides.normalizedModel(model.id) == model.id && seen.insert(model.id).inserted
+                && model.name.utf8.count <= limits.textBytes && model.description.utf8.count <= limits.textBytes
+                && (model.contextWindow.map { (2...10_000_000).contains($0) } ?? true)
+                && (model.maxOutputTokens.map { (1...1_000_000).contains($0) } ?? true)
+                && (model.reasoning.map { $0.allSatisfy(efforts.contains) } ?? true)
+                && (model.input.map { $0.allSatisfy(["text", "image"].contains) } ?? true)
+        }
     }
     private var encoder: JSONEncoder { let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .secondsSince1970; return encoder }
     private var decoder: JSONDecoder { let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970; return decoder }

@@ -255,7 +255,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
         updated.descriptors = saved.descriptors; updated.models = saved.descriptors.filter { !$0.deprecated }.map(\.id)
         updated.source = "catalog"; updated.fetchedAt = saved.savedAt; updated.error = nil
         entries[id] = updated
-        keptLists[id] = saved.descriptors
+        keptLists[id] = Kept(source: Self.keptSource(profile), descriptors: saved.descriptors)
     }
 
     private static func listing(usesCatalog: Bool, catalogURL: URL?, base: String, api: String, credential: @escaping @Sendable () async throws -> String,
@@ -310,17 +310,24 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     }
 
     /// What is on disk for each connection, as far as this run knows, so an
-    /// unchanged list is not written again at every refresh.
-    private var keptLists: [String: [ModelDescriptor]] = [:]
+    /// unchanged list is not written again at every refresh. With its source:
+    /// another address that lists the same models is kept as its own.
+    private struct Kept: Equatable { var source: String; var descriptors: [ModelDescriptor] }
+    private var keptLists: [String: Kept] = [:]
+    /// The saved connections, once the configuration has said which they are.
+    /// A read that lands for one removed meanwhile keeps nothing.
+    private var savedProfiles: Set<String>?
     /// Writes to the store one after another, in the order they were asked for.
     private var keeping: Task<Void, Never>?
 
     /// A saved connection's own catalog, read whole: kept for the next launch.
     private func keep(_ descriptors: [ModelDescriptor], profile: ProfileRecord, usesCatalog: Bool) {
-        guard usesCatalog, Self.kept(profile), let store, keptLists[profile.id] != descriptors else { return }
-        keptLists[profile.id] = descriptors
-        let id = profile.id, source = Self.keptSource(profile), date = now()
-        stored { await store.save(descriptors, connection: id, source: source, at: date) }
+        guard usesCatalog, Self.kept(profile), let store, savedProfiles?.contains(profile.id) != false else { return }
+        let kept = Kept(source: Self.keptSource(profile), descriptors: descriptors)
+        guard keptLists[profile.id] != kept else { return }
+        keptLists[profile.id] = kept
+        let id = profile.id, date = now()
+        stored { await store.save(descriptors, connection: id, source: kept.source, at: date) }
     }
     private func stored(_ work: @escaping @Sendable () async -> Void) {
         keeping = Task { [keeping] in await keeping?.value; await work() }
@@ -338,6 +345,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     /// save, an import or an earlier version of the app) are dropped.
     func keepStored(for profileIDs: Set<String>) {
         guard let store else { return }
+        savedProfiles = profileIDs
         for id in keptLists.keys where !profileIDs.contains(id) { keptLists[id] = nil }
         stored { await store.prune(keeping: profileIDs) }
     }

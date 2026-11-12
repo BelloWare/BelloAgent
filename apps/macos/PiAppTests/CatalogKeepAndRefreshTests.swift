@@ -154,6 +154,49 @@ final class CatalogKeepAndRefreshTests: XCTestCase {
         await address.release(); _ = await reading.value
     }
 
+    /// Another source that lists the very same models is still another source: its list is kept as its own.
+    @MainActor func testAnotherSourceWithTheSameModelsIsKeptAsItsOwn() async throws {
+        let store = ModelCatalogStore(directory: folder()), address = CatalogAddress(list(["alpha", "beta"])), connection = profile()
+        let catalog = catalog(address, store: store)
+        _ = await catalog.load(profile: connection) { "key" }
+        try await stored(store, connection, ["alpha", "beta"])
+        var moved = connection; moved.catalogUrl = "https://gateway.example/moved.json"; moved.revision = "moved"
+        _ = await catalog.load(profile: moved) { "key" }
+        try await stored(store, moved, ["alpha", "beta"])
+        // So the next launch has it when the new address does not answer.
+        await address.hold()
+        let relaunched = self.catalog(address, store: store)
+        let atOnce = try await atOnce(relaunched, moved)
+        XCTAssertEqual(atOnce, ["alpha", "beta"])
+        await address.release()
+    }
+
+    /// A connection that stops being saved while its catalog is being read leaves nothing behind when that read lands.
+    @MainActor func testAReadThatLandsAfterItsConnectionWasRemovedKeepsNothing() async throws {
+        let directory = folder(), store = ModelCatalogStore(directory: directory), address = CatalogAddress(list(["alpha", "beta"])), clock = CatalogClock(), connection = profile()
+        let catalog = catalog(address, store: store, clock: clock)
+        catalog.keepStored(for: [connection.id])
+        _ = await catalog.load(profile: connection) { "key" }
+        try await stored(store, connection, ["alpha", "beta"])
+        clock.date = clock.date.addingTimeInterval(301)
+        await address.answer(list(["alpha", "gamma"])); await address.hold()
+        _ = try await atOnce(catalog, connection)
+        try await eventually("The read behind never started", until: { await address.calls == 2 })
+        // Another window's save, or an import, removed the connection.
+        catalog.keepStored(for: [])
+        try await eventually("The removed connection's list stayed kept") { ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).isEmpty }
+        await address.release()
+        try await eventually("The read never landed") { !catalog.entry(for: connection).loading }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).isEmpty, "The read that landed afterwards recreated the removed connection's list")
+        // Saved again, it is kept again.
+        catalog.keepStored(for: [connection.id])
+        clock.date = clock.date.addingTimeInterval(301)
+        await address.answer(list(["alpha", "delta"]))
+        _ = await catalog.load(profile: connection, force: true) { "key" }
+        try await stored(store, connection, ["alpha", "delta"])
+    }
+
     /// The saved revision changes with every save (the key may have changed). The same source keeps its list meanwhile.
     @MainActor func testASavedConnectionKeepsItsListWhileItsNewRevisionIsRead() async throws {
         let store = ModelCatalogStore(directory: folder()), address = CatalogAddress(list(["alpha", "beta"])), connection = profile()
@@ -215,6 +258,13 @@ final class CatalogKeepAndRefreshTests: XCTestCase {
             #"{"version":1,"source":"another-source","savedAt":1,"models":[\#(model)]}"#,
             #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[\#(model),\#(model)]}"#,
             #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":" padded ","name":"","description":"","deprecated":false}]}"#,
+            // Limits the catalog format refuses must not come back from disk either.
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"","description":"","deprecated":false,"contextWindow":0}]}"#,
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"","description":"","deprecated":false,"maxOutputTokens":-1}]}"#,
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"","description":"","deprecated":false,"contextWindow":-9223372036854775808}]}"#,
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"","description":"","deprecated":false,"reasoning":["turbo"]}]}"#,
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"","description":"","deprecated":false,"input":["video"]}]}"#,
+            #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[{"id":"alpha","name":"\#(String(repeating: "n", count: 2049))","description":"","deprecated":false}]}"#,
             #"{"version":1,"source":"\#(kept)","savedAt":1,"models":[\#((0...2048).map { #"{"id":"m\#($0)","name":"","description":"","deprecated":false}"# }.joined(separator: ","))]}"#,
         ]
         for text in damaged {
