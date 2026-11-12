@@ -106,7 +106,8 @@ final class CompactionBudgetTests: HelperTestCase {
             try await s.compact();try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),context=await s.context,calls=await c.requests
             XCTAssertEqual(state["compaction"]["errorCode"].text,code)
-            XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,1)
+            // 0.1.138: a completed summary with no text, or a tool call, is asked for once more; a refusal and a filtered reply are not.
+            XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,[.empty,.tool].contains(mode) ? 2 : 1,"\(mode)")
             await s.close()
         }
     }

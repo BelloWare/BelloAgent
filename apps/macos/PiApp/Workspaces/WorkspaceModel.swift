@@ -604,11 +604,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil, tabDefaults: UserDefaults? = ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard) {
         tabs = TabHost(defaults: tabDefaults)
         self.launching = launching
-        self.modelCatalog = modelCatalog ?? ModelCatalog()
         self.vault = vault
         self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil
         root = stateRoot ?? benchmarkRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("com.belloware.PiApp", isDirectory: true)
+        // Each saved connection's last good custom catalog is kept beside the
+        // rest of the app's state, so a launch has its models at once.
+        self.modelCatalog = modelCatalog ?? ModelCatalog(store: ModelCatalogStore(directory: root.appendingPathComponent("ModelCatalogs", isDirectory: true)))
         pastedImages = PastedImageStorage(root: root)
         traces = PayloadArchive(root: root.appendingPathComponent("Requests-v1", isDirectory: true))
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))

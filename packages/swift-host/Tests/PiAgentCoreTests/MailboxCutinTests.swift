@@ -116,6 +116,15 @@ extension MailboxCutinTests {
         message.providerIdentity = ["status":"reported","effectiveModel":"gpt-5.4"]
         message.nativeMailboxCut = ["version":1]
         XCTAssertEqual(try ProviderClient.assistantItems(message,profile:profile,msgIndex:0),items)
+        // 0.1.138: the owner's "Continue without earlier reasoning" comes
+        // before the cut's verbatim replay, as before any other reply's: the
+        // reply then goes from its text and calls, as the row holds them.
+        message.content = [textBlock("Retained note"),["type":"toolCall","id":"call_1","name":"bash","arguments":["command":"pwd"]]]
+        XCTAssertEqual(try ProviderClient.assistantItems(message,profile:profile,msgIndex:0),items,"Still verbatim while nothing is withheld")
+        let withheld = try ProviderClient.assistantItems(message,profile:profile.withholding([message.id]),msgIndex:0)
+        XCTAssertFalse(withheld.contains { $0["type"].text == "reasoning" },"A cut reply's reasoning is left out like any reply's")
+        XCTAssertEqual(withheld.filter { $0["type"].text == "function_call" }.map { $0["call_id"].text },["call_1"],"Its call still goes")
+        XCTAssertTrue(withheld.allSatisfy { $0["id"].text?.hasPrefix("fc_") != true },"without the item ID that names its reasoning")
     }
     func testLazyPromotionKeepsV4UntilFirstCutAndNeverDowngrades() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

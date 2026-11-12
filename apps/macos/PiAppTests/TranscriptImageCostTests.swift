@@ -46,7 +46,8 @@ final class TranscriptImageCostTests: XCTestCase {
     @MainActor func testImageMetadataDoesNotWidenTheCommonRow() {
         XCTAssertEqual(MemoryLayout<TranscriptMessage>.stride, MemoryLayout<AnyObject>.stride, "All message fields share STREAM-1's single storage reference")
         XCTAssertLessThanOrEqual(MemoryLayout<TranscriptItem>.stride, 5_600, "Work blocks carry messages, including image-free replies")
-        XCTAssertLessThanOrEqual(MemoryLayout<TranscriptActions>.stride, 320, "Image actions must fit within the pre-image action budget")
+        // 328 since 0.1.138: one optional action more, the refusal notice's "Continue without earlier reasoning". Image actions add nothing to it.
+        XCTAssertLessThanOrEqual(MemoryLayout<TranscriptActions>.stride, 328, "Image actions must fit within the pre-image action budget")
         for type: AnyClass in [TranscriptRowContainer.self, TranscriptNativeUserRow.self, TranscriptNativePartRow.self] {
             print("IMAGE COST class \(type): \(class_getInstanceSize(type)) bytes")
         }

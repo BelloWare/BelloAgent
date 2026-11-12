@@ -9,8 +9,10 @@ enum CompactionCheckpoint {
     /// written into that checkpoint's record (`continuationText`) and replayed
     /// from there inside the checkpoint's own input item, so the request
     /// prefix stays the same on every later request; a checkpoint without the
-    /// field replays exactly as before.
-    static let continuationText = "The task was in progress when this checkpoint was made. Continue from the retained request and latest results without asking the owner to repeat them."
+    /// field replays exactly as before. 0.1.138 adds the last clause for new
+    /// checkpoints (a summary that said "restart" was obeyed); one recorded
+    /// earlier replays the words it recorded.
+    static let continuationText = "The task was in progress when this checkpoint was made. Continue from the retained request and latest results without asking the owner to repeat them, and without redoing work the summary records as done."
     /// The summary a checkpoint row replays, as its journal record holds it.
     static func summaryText(_ message: ChatMessage) -> String {
         let text=message.text

@@ -19,6 +19,9 @@ private enum Step {
 }
 private enum Summary: Equatable {
     case text, cutAtItsCap
+    /// A completed reply with no text; a completed reply that calls a tool
+    /// instead; the provider's own refusal of the request as too long.
+    case empty, toolCall, rejected
     /// A completed summary of exactly this many characters.
     case chars(Int)
 }
@@ -41,6 +44,9 @@ private actor FlowClient: ModelClient {
                 return ModelReply(message:ChatMessage(role:"assistant",content:[textBlock("Partial")]),usage:["input":100,"output":JSON(profile.maxOutput)],truncated:true,
                                   terminal:ModelTerminalOutcome(status:"incomplete",incompleteReason:"max_output_tokens"))
             }
+            if kind == .empty { return answer("") }
+            if kind == .toolCall { return reads(99) }
+            if kind == .rejected { throw AgentError("provider_http","HTTP 400 rejected input",failure:.inputContextExceeded) }
             if case .chars(let count)=kind { return answer(String(repeating:"s",count:count)) }
             return answer("SUMMARY \(made)")
         }
@@ -357,7 +363,7 @@ final class CompactionFlowTests: HelperTestCase {
         XCTAssertEqual(following.count,3)
         let first=try item(following,0), checkpoint=try item(first["input"].list,1), text=checkpoint["content"].list.first?["text"].text ?? ""
         XCTAssertTrue(text.hasPrefix(ProviderClient.compactionSummaryPrefix+"SUMMARY 1"+ProviderClient.compactionSummarySuffix),String(text.prefix(160)))
-        XCTAssertTrue(text.hasSuffix("</summary>\n\n"+continuation+" Continue from the retained request and latest results without asking the owner to repeat them."),String(text.suffix(200)))
+        XCTAssertTrue(text.hasSuffix("</summary>\n\n"+continuation+" Continue from the retained request and latest results without asking the owner to repeat them, and without redoing work the summary records as done."),String(text.suffix(200)))
         for body in following.dropFirst() { XCTAssertEqual(try item(body["input"].list,1),checkpoint,"The checkpoint item never changes") }
         XCTAssertEqual(context.first?.compaction?["after"]["requestTokens"].int,RequestContextCounter.projectedTokens(first),"Counted with its framing")
         await s.close()
@@ -815,5 +821,166 @@ final class CompactionAgentDeliveryTests: HelperTestCase {
         state=await parent.agentState(); let rows=await parent.history
         XCTAssertEqual(state.messages["message-0"]?.disposition,"pending"); XCTAssertFalse(rows.contains { $0.nativeAgentDelivery != nil })
         await parent.close()
+    }
+}
+
+/// `reply` with `chars` of opaque reasoning before its calls, as a model
+/// that reasons returns it and a connection that sends reasoning back replays it.
+private func reasoned(_ reply: ModelReply, round: Int, chars: Int = 12_000) -> ModelReply {
+    var reply=reply
+    reply.message.reasoningReplay=true
+    reply.message.providerItems=[["type":"reasoning","id":JSON("rs_\(round)"),"summary":[],"encrypted_content":JSON("enc-\(round)-"+String(repeating:"A",count:chars))]]+(reply.message.providerItems ?? [])
+    return reply
+}
+
+// Over the usable input before the request is sent, 0.1.138. Live,
+// 2026-11-12, a 32,768-token window with reasoning sent back: one file's
+// result (7,200 tokens) with the reasoning that asked for it is more than
+// half the usable input, so no plan could be made at the threshold, ten
+// times, and the turn grew to 80,982 tokens. What a provider's refusal
+// already allowed is done before sending: only what must stay is kept with
+// the checkpoint, and the summary request goes out though it too is over the
+// window as declared.
+final class CompactionOverWindowPlanTests: HelperTestCase {
+    private let task="OWNER-TASK: read the parts in order and list their markers."
+    private func session(_ root: URL, _ client: FlowClient) throws -> AgentSession {
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=32_768; raw["maxOutputTokens"]=8_192; raw["modelOutputLimit"]=16_384
+        return try AgentSession(id:"over-plan",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                                resources:Resources(cwd:root,home:root),client:client,tools:BulkTools(chars:28_000),traces:TraceStore(),
+                                seed:[user("old","OLD-0 "+String(repeating:"u",count:2_000)),reply("old-reply","ANSWER-0 "+String(repeating:"a",count:30_000),root:"old")])
+    }
+    private func run(_ root: URL, _ client: FlowClient) async throws -> (state: JSON, session: AgentSession) {
+        let s=try session(root,client)
+        _=try await s.keep(whenFinished:false)
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        try await eventually(timeout:.seconds(30)) { !(await s.isRunning) }
+        return (await s.snapshot(),s)
+    }
+    private func script() -> [Step] { [.reply(reasoned(reads(0),round:0)),.reply(reasoned(reads(1),round:1)),.reply(reasoned(reads(2),round:2)),.reply(answer("All done."))] }
+    private func notices(_ s: AgentSession) async -> Int { await s.history.filter { $0.kind == "execution" && ($0.detail ?? "").hasPrefix("Context · ") }.count }
+
+    func testWhatMustStayIsKeptWithACheckpointBeforeARequestGoesOutOverTheWindow() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient(script())
+        let (state,s)=try await run(root,client)
+        let sent=await client.sent, held=await s.suppressedCompactionTask, said=await notices(s), context=await s.context
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        // The second request is past the working threshold and inside the
+        // window: no plan can be made around one result and its reasoning,
+        // which costs nothing. The third would be over the window.
+        XCTAssertEqual(sent.map(\.purpose),["turn","turn","compaction","turn","turn"])
+        XCTAssertGreaterThan(RequestContextCounter.projectedTokens(try item(sent,1).body),17_500,"The second request was past the working threshold")
+        for request in sent where request.purpose == "turn" {
+            XCTAssertLessThanOrEqual(RequestContextCounter.projectedTokens(request.body),32_768-8_192-327,"No turn request leaves over the input the window has")
+        }
+        let summary=try item(sent,2), next=try item(sent,3).body
+        XCTAssertGreaterThan(RequestContextCounter.projectedTokens(summary.body)+8_192,32_768,"The summary request is itself over the window as declared, and is sent")
+        XCTAssertEqual(summary.cap,8_192,"with the least a summary is allowed, not a squeezed cap")
+        XCTAssertEqual(userTexts(next).last,task,"The request as written"); XCTAssertEqual(outputs(next),["RESULT-c1-0"],"and the newest batch; the first is summarized")
+        XCTAssertTrue(next["input"].list.contains { $0["type"].text == "reasoning" && ($0["encrypted_content"].text ?? "").hasPrefix("enc-1-") },"with the reasoning that asked for it")
+        XCTAssertTrue(userTexts(next).contains { $0.contains("SUMMARY 1") && $0.contains(continuation) })
+        XCTAssertNil(held,"Nothing failed: the task may compact again"); XCTAssertEqual(said,0,"A request that was relieved is not said to be over the window")
+        XCTAssertEqual(context.first?.kind,"compaction")
+        let path=await s.path, journal=try String(contentsOfFile:try XCTUnwrap(path),encoding:.utf8)
+        XCTAssertFalse(journal.contains(JournalRecordKind.compactionFailure),"The plan that could not be made at the threshold left no failure record")
+        await s.close()
+    }
+
+    /// The window is what it was declared to be: the provider refuses the
+    /// summary request. That is a summary sent and not used, once: its row
+    /// says why, and the turn's requests then go whole.
+    func testAProviderThatRefusesTheSummaryRequestEndsTheTasksCompactionOnce() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient(script(),summaries:[.rejected])
+        let (state,s)=try await run(root,client)
+        let purposes=await client.purposes, held=await s.suppressedCompactionTask, context=await s.context
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(purposes,["turn","turn","compaction","turn","turn"],"One summary request, and none after it")
+        XCTAssertEqual(held,"task"); XCTAssertNotEqual(context.first?.kind,"compaction")
+        let rows=await s.history.filter { $0.kind == "execution" && ($0.detail ?? "").contains("rejected the intact summary request") }.count
+        XCTAssertEqual(rows,1,"The compaction's own row says the gateway refused it")
+        await s.close()
+    }
+}
+
+// A summary request answered with no text, or with a tool call, 0.1.138.
+// Live, 2026-11-12: one "Compact now" in three on a small Gemini model came
+// back with reasoning and no text, and the chat ended in an error. It is
+// asked once more: the same request and one line. The first answer is a
+// failed attempt with its spend; a second miss is the failure it was.
+final class CompactionAskAgainTests: HelperTestCase {
+    private let task="OWNER-TASK: port the parser to the new grammar, keep the old entry point, and run every test."
+    private func session(_ root: URL, _ client: FlowClient, tools: BulkTools, seed: [ChatMessage]? = nil) throws -> AgentSession {
+        try AgentSession(id:"again",profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                         resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),seed:seed)
+    }
+    private func settled(_ s: AgentSession) async throws -> JSON {
+        try await eventually(timeout:.seconds(30)) { !(await s.isRunning) }
+        return await s.snapshot()
+    }
+    private func working(_ summaries: [Summary]) -> FlowClient {
+        FlowClient([.reply(reads(0,3)),.reply(reads(1,3)),.reply(reads(2,3)),.reply(answer("All done."))],summaries:summaries)
+    }
+
+    func testAnEmptySummaryIsAskedForOnceMoreWithOneLineAppended() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlowClient([],summaries:[.empty,.text])
+        let s=try session(root,client,tools:BulkTools(chars:1),seed:earlier(4))
+        try await s.compact()
+        let state=try await settled(s), sent=await client.sent, context=await s.context
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(sent.map(\.purpose),["compaction","compaction"])
+        let first=try item(sent,0), second=try item(sent,1), again=second.body["input"].list
+        XCTAssertEqual(Array(again.dropLast()),first.body["input"].list,"The first request, item for item")
+        XCTAssertEqual(second.body.removing(["input"]),first.body.removing(["input"]),"under the same model, tools, cap and controls")
+        XCTAssertEqual(again.last?["role"].text,"user")
+        XCTAssertEqual(again.last?["content"].list.first?["text"].text,"The reply to the request above was not a checkpoint: it called a tool or was empty. Nothing was run. No tool can be called here, and the owner's messages above are not to be answered now. Reply with the checkpoint only, as plain text under the four headings.")
+        XCTAssertEqual(context.first?.kind,"compaction"); XCTAssertTrue(context.first?.text.contains("SUMMARY 2") == true,"The second answer is the checkpoint")
+        XCTAssertEqual(context.first?.compaction?["summaryAttemptIds"].list.count ?? 0,context.first?.requestAttemptIDs?.count ?? -1)
+        await s.close()
+    }
+
+    func testASummaryAnsweredWithAToolCallIsAskedForAgainAndNothingOfItRuns() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=working([.toolCall,.text]), tools=BulkTools(chars:32_000)
+        let s=try session(root,client,tools:tools)
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, invoked=await tools.invoked, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(purposes,["turn","turn","turn","compaction","compaction","turn"],"One compaction: asked twice, adopted, and the turn goes on")
+        XCTAssertFalse(invoked.contains("c99-0"),"The call a summary made is never run"); XCTAssertNil(held)
+        await s.close()
+    }
+
+    func testASecondMissIsTheFailureItWas() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        func folder(_ name: String) throws -> URL { let url=root.appendingPathComponent(name); try FileManager.default.createDirectory(at:url,withIntermediateDirectories:true); return url }
+        // Automatic: the task's one summary was sent and not used; the turn goes on, and no third ask.
+        let client=working([.empty,.toolCall,.text])
+        let s=try session(try folder("auto"),client,tools:BulkTools(chars:32_000))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(purposes,["turn","turn","turn","compaction","compaction","turn"]); XCTAssertEqual(held,"task")
+        await s.close()
+        // Manual: the error it was, with the context as it was.
+        let manual=FlowClient([],summaries:[.empty,.empty,.text])
+        let idle=try session(try folder("manual"),manual,tools:BulkTools(chars:1),seed:earlier(4))
+        try await idle.compact()
+        let failed=try await settled(idle), asked=await manual.purposes, context=await idle.context
+        XCTAssertEqual(failed["state"].text,"error"); XCTAssertEqual(failed["errorCode"].text,"compaction_empty_summary")
+        XCTAssertEqual(asked,["compaction","compaction"]); XCTAssertEqual(context.count,8,"Nothing was replaced")
+        await idle.close()
+    }
+
+    /// A reply the output cap cut is not one to ask for again under the same cap.
+    func testASummaryCutAtItsCapIsNotAskedForAgain() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=working([.cutAtItsCap,.text])
+        let s=try session(root,client,tools:BulkTools(chars:32_000))
+        _=try await s.submit(Submission(commandID:"c",turnID:"task",text:task),steer:false)
+        let state=try await settled(s), purposes=await client.purposes, held=await s.suppressedCompactionTask
+        XCTAssertEqual(state["state"].text,"idle"); XCTAssertEqual(purposes,["turn","turn","turn","compaction","turn"]); XCTAssertEqual(held,"task")
+        await s.close()
     }
 }

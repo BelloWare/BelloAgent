@@ -102,18 +102,21 @@ final class TurnCapacityTests: HelperTestCase {
         await session.close()
     }
 
-    /// A compaction is one request, never chunks: a switch to a window too
-    /// small for the history's one summary request refuses the compaction
-    /// before anything is sent. Since 0.1.137 that does not fail the turn: as
-    /// pi does after a failed threshold compaction, the turn's request is
-    /// still sent, intact, for the gateway to judge. Nothing was spent, so
-    /// the task is not written off: a plan is tried again when the chat changes.
-    func testAWindowTooSmallForOneSummaryRequestSendsNoSummary() async throws {
+    /// A compaction is one request, never chunks. After a switch to a window
+    /// too small for the history, the turn's own request is over the window
+    /// and would go out whole for the gateway to judge (0.1.137). Since
+    /// 0.1.138 the one summary request goes first, though it is over the
+    /// window as declared too: it is that same request and one instruction,
+    /// and the way back under the window. (Until then it was refused before
+    /// anything was sent, `compaction_too_large`, and such a chat never
+    /// compacted unless the provider refused the turn. A provider that
+    /// refuses the summary request: `CompactionOverWindowPlanTests`.)
+    func testAfterASwitchToAWindowTooSmallTheSummaryRequestIsSentThoughItIsOverTheWindow() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         // A first task of 7,000 tokens, more than the 8,000-token window
         // holds beside any summary, then the short exchange that would stay.
         var first = answer("old answer"); first.usage = ["input": 7_100, "inputIncludingCache": 7_100, "output": 5]
-        let client = ScriptClient([first, answer("noted"), answer("continued")])
+        let client = ScriptClient([first, answer("noted"), answer("SUMMARY of the first task"), answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 28000)), steer: false)
         try await eventually { !(await session.isRunning) }
@@ -123,12 +126,13 @@ final class TurnCapacityTests: HelperTestCase {
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 8000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, snapshot = await session.snapshot(), requests = await client.requests, held = await session.suppressedCompactionTask
-        XCTAssertEqual(purposes, ["turn", "turn", "turn"], "The intact summary does not fit: no summary is sent, and the turn's own request is")
-        XCTAssertEqual(snapshot["compaction"]["errorCode"].text, "compaction_too_large")
-        XCTAssertTrue(snapshot["compaction"]["error"].text?.contains("Nothing was sent") == true)
+        XCTAssertEqual(purposes, ["turn", "turn", "compaction", "turn"], "The summary request is sent before the turn's own")
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
-        XCTAssertEqual(requests.last?.filter(\.replayEligible).map(\.id), before.map(\.id) + ["small"], "The request is the intact context")
-        XCTAssertNil(held, "Nothing was sent, so the task's automatic compaction is not ended")
+        XCTAssertTrue(snapshot["compaction"]["errorCode"].isNull, snapshot["compaction"]["error"].encoded())
+        let sent = try XCTUnwrap(requests.last).filter(\.replayEligible), kept = Array(before.suffix(2)).map(\.id)
+        XCTAssertEqual(sent.first?.kind, "compaction"); XCTAssertTrue(sent.first?.text.contains("SUMMARY of the first task") == true)
+        XCTAssertEqual(Array(sent.dropFirst()).map(\.id), kept + ["small"], "What follows the checkpoint: the exchange before the message, and the message")
+        XCTAssertNil(held, "Nothing failed")
         await session.close()
     }
 

@@ -39,11 +39,13 @@ extension AgentSession {
     /// What a checkpoint carries for the session besides its rows and
     /// context, in its `helper` field, for an open that resumes from it to
     /// take over (`replay`). The receipts are added where they are known.
-    static func checkpointHelper(spend: SessionSpend, spendTracked: Bool, failedCompactionFingerprint: String?, suppressedCompactionTask: String? = nil, contextRecovery: JSON,
+    static func checkpointHelper(spend: SessionSpend, spendTracked: Bool, failedCompactionFingerprint: String?, suppressedCompactionTask: String? = nil, reasoningWithheld: [String: Set<String>] = [:], contextRecovery: JSON,
                                  compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int, subagents: SubagentJournalState = SubagentJournalState(), accounting: AttemptAccounting = AttemptAccounting()) -> JSON {
         var helper: JSON = ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
          "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
         if let suppressedCompactionTask { helper["suppressedCompactionTask"] = JSON(suppressedCompactionTask) }
+        // An open that resumes from the checkpoint does not read the records before it.
+        if !reasoningWithheld.isEmpty { helper["reasoningWithheld"] = AgentSession.saved(reasoningWithheld) }
         if subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { helper["subagentEffortVersion"] = 1; helper["subagentCodexVersion"] = 4 }
         if subagents.cuts != nil { helper["subagentCutinVersion"] = 1 }
         return helper
@@ -236,7 +238,7 @@ extension AgentSession {
         // A run-state write that failed may or may not be in the journal: the
         // receipts it stands for are not known until a whole list is written.
         guard let last, !journaledCommandsUncertain else { return }
-        var helper = Self.checkpointHelper(spend: spend, spendTracked: spendTracked, failedCompactionFingerprint: failedCompactionFingerprint, suppressedCompactionTask: suppressedCompactionTask,
+        var helper = Self.checkpointHelper(spend: spend, spendTracked: spendTracked, failedCompactionFingerprint: failedCompactionFingerprint, suppressedCompactionTask: suppressedCompactionTask, reasoningWithheld: reasoningWithheld,
                                            contextRecovery: contextRecovery, compactionState: compactionState, parentInfo: parentInfo, presentationOrdinal: presentationOrdinal, subagents: subagents, accounting: accounting)
         helper["commands"] = .array(journaledCommands)
         let state = liveStateSource.map { (line: $0.line, offset: $0.offset, key: $0.key) }

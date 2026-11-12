@@ -20,6 +20,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
             stop: { calls.append("stop") },
             retry: { calls.append("retry") },
             resume: { calls.append("resume") },
+            continueWithoutReasoning: { calls.append("continueWithoutReasoning") },
             quoteReply: { _ in calls.append("quoteReply") },
             inspectTurn: { _ in calls.append("inspectTurn") },
             skillPressed: { id, use, _ in calls.append("skillPressed \(id) \(use.name)") },
@@ -42,7 +43,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         let anchor = NSView()
         let skill = TranscriptSkillUse(id: "id-review", name: "review", path: "/p/.agents/skills/review/SKILL.md",
                                        contentHash: "3f2a9c1e77", metadataHash: "", arguments: "")
-        row.inspect("m1"); row.edit("m2"); row.copyMessage("m3"); row.stop(); row.retry(); row.resume()
+        row.inspect("m1"); row.edit("m2"); row.copyMessage("m3"); row.stop(); row.retry(); row.resume(); row.continueWithoutReasoning?()
         row.inspectTurn?(TaskTranscriptPlan.summary([], task: nil))
         row.skillPressed?("m4", skill, anchor); row.skillHovered?("m5", skill, anchor, true)
         row.costLimit?(.raise, anchor); row.fork?("m6"); row.switchVersion?("m7", -1); row.latestVersion?()
@@ -53,7 +54,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         row.openSubagent?(child); row.inspectSubagent?(child); row.stopSubagent?(child); row.openAgentSource?(.init(childID: "chat-child", turn: 2))
         let loaded = try? await row.loadImage?(TranscriptMessage(id: "image", role: "user", text: ""), 1, 128)
         XCTAssertTrue(loaded === bitmap)
-        XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "resume", "inspectTurn",
+        XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "resume", "continueWithoutReasoning", "inspectTurn",
                                "skillPressed m4 review", "skillHovered m5 review true", "costLimit raise",
                                "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3", "openSubagent chat-child", "inspectSubagent chat-child", "stopSubagent chat-child", "openAgentSource chat-child", "loadImage image 1 128"])
         XCTAssertNil(row.quoteReply, "Rows never ask for a quote; the page's selection controller does")
@@ -72,7 +73,8 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         let relay = TranscriptActionRelay()
         let row = TranscriptActions.forwarding { relay.forwarded }
         XCTAssertNotNil(row.fork, "Rows decide what they offer from the environment, not from a nil action")
-        row.fork?("m1"); row.switchVersion?("m1", 1); row.latestVersion?(); row.costLimit?(.continueRun, nil)
+        XCTAssertNotNil(row.continueWithoutReasoning, "0.1.138: the refusal notice's one button reaches the pane through the relays")
+        row.fork?("m1"); row.switchVersion?("m1", 1); row.latestVersion?(); row.costLimit?(.continueRun, nil); row.continueWithoutReasoning?()
         row.openFile?("/p/a.swift", nil)
     }
 
@@ -82,7 +84,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         let fields = Array(Mirror(reflecting: TranscriptActions(quoteReply: { _ in })).children)
         let input = try XCTUnwrap(fields.first { $0.label == "inputActions" })
         let content = try XCTUnwrap(Mirror(reflecting: input.value).children.first)
-        XCTAssertEqual(fields.count - 1 + Mirror(reflecting: content.value).children.count, 21,
+        XCTAssertEqual(fields.count - 1 + Mirror(reflecting: content.value).children.count, 22,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }

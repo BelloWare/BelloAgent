@@ -127,7 +127,7 @@ struct ModelSwitchPillContents: Equatable {
         modelPill = ComposerPillButton(icon: "cpu", text: "", maxTextWidth: 170)
         effort = ComposerPillButton(icon: "brain", text: "", maxTextWidth: ModelSwitchPills.effortLabelWidth)
         super.init(frame: .zero)
-        connection.toolTip = "The LiteLLM connection, key and model list this chat uses. Switching closes its helper session; the next turn replays the chat's portable history on the new connection."
+        connection.toolTip = "The LiteLLM connection, key and model list this chat uses. Switching closes its helper session; the next turn goes to the new connection with the chat's history, and with the reasoning its replies are sent back with."
         connection.setAccessibilityIdentifier("session-connection-picker")
         modelPill.setAccessibilityIdentifier("session-model-picker")
         effort.toolTip = "Profile default keeps the connection's effort. Model default leaves effort unspecified. Your choice is remembered for new chats using this connection."

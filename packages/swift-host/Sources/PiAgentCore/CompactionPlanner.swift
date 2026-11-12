@@ -302,7 +302,7 @@ struct PreparedCompaction: Sendable {
 extension CompactionPlanner {
     static func prepare(frozen: [ChatMessage], profile: Profile, instructions: String, definitions: [ToolDefinition],
                         sessionID: String, cacheSessionID: String, taskRoot: String?, taskOpen: Bool = true, policy: CompactionPolicy,
-                        reason: String, focus: String?) throws -> PreparedCompaction {
+                        reason: String, focus: String?, overWindow: Bool = false) throws -> PreparedCompaction {
         try Task.checkCancellation()
         func body(_ messages: [ChatMessage]) throws -> JSON {
             try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:definitions,sessionID:sessionID,cacheSessionID:cacheSessionID)
@@ -404,8 +404,14 @@ extension CompactionPlanner {
         // only what must stay is kept with the checkpoint, though that may
         // pass half the usable input, provided the replacement fits a normal
         // request at the whole allowance. Nothing required is dropped.
+        // 0.1.138: the same before a request is sent that does not fit beside
+        // the reply's reserve (`overWindow`). Until then such a request went
+        // out whole and the plan waited for a refusal; a provider whose real
+        // window is larger than the declared one never gives it, and a task
+        // whose every round is over the half (one large result with the
+        // reasoning that asked for it, in a small window) was never compacted.
         var recoveryOnly=false
-        if reason == "context-rejection", !unchanged, try !admitted(plan) {
+        if reason == "context-rejection" || overWindow, !unchanged, try !admitted(plan) {
             let required=CompactionPlanner.plan(source,cut:min(max(source.required,source.whole),source.body.count))
             if try acceptable(required,fitOnly:true) { plan=required; recoveryOnly=true }
         }

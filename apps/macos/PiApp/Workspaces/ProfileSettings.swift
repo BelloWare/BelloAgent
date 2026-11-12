@@ -302,7 +302,7 @@ import Combine
                                       footer: "Leave the key and headers empty to keep the saved values. The selected alias remains the requested model; a gateway's reported route may change between requests.", rows: rows)
 
         let pinned = controller.draft.replayPolicy == "pinned"
-        var replay: [NSView] = [SettingsRow(label: "Policy", last: !pinned, control: dropdown([("portable", "Portable text and tool history"), ("pinned", "Preserve native state on a fixed route"), ("ask", "Ask before replaying native state")],
+        var replay: [NSView] = [SettingsRow(label: "Policy", last: !pinned, control: dropdown(ReasoningReplayChoice.options,
                                                                                           name: "Reasoning continuation policy", get: { controller.draft.replayPolicy }, set: { controller.draft.replayPolicy = $0 }))]
         if pinned {
             replay.append(SettingsRow(label: "Expected reported model", control: field(placeholder: "model id", mono: true, label: "Expected reported model",
@@ -310,7 +310,7 @@ import Combine
             replay.append(SettingsRow(label: "Fixed-route compatibility contract", last: true, control: field(placeholder: "reference", label: "Fixed-route compatibility contract",
                                                                                                             get: { controller.draft.replayContract }, set: { controller.draft.replayContract = $0 })))
         }
-        let reasoning = SettingsCard(title: "Reasoning continuation", footer: "Portable history supports changing router models. It sends visible text and tool calls/results; original signed/encrypted reasoning stays in history. Preserving native state requires a compatible route guaranteed by your gateway.", rows: replay)
+        let reasoning = SettingsCard(title: "Reasoning continuation", footer: ReasoningReplayChoice.footer, rows: replay)
 
         let metadata = SettingsCard(title: "Gateway model and cache metadata contract", footer: "The response model is recorded automatically. Only configure headers documented for your deployment. An opaque deployment ID or route group is not an actual model name. Use a header reporting true/false or hit/miss; a cache key alone is not evidence of a hit.", rows: [
             SettingsRow(label: "Deployment/version contract reference", control: field(placeholder: "reference", label: "Deployment/version contract reference", get: { controller.draft.metadataReference }, set: { controller.draft.metadataReference = $0 })),
@@ -836,7 +836,12 @@ struct SettingsConnectionForm: Equatable {
     static func loaded(_ profile: ProfileRecord, isSaved: Bool) -> Self {
         var fields = profile.configuration
         var routing = fields.removeValue(forKey: "routing")?.object ?? [:]
-        if routing["replayPolicy"] == nil { routing["replayPolicy"] = .string(isSaved ? "ask" : "portable") }
+        // 0.1.137 knew `portable`, `ask` and `pinned`. `portable` was
+        // written into every new connection and `ask` refused to send a
+        // request once a chat held reasoning; neither was an owner's choice,
+        // and both mean "send reasoning back" now. What is saved stays a
+        // value that build accepts: `portable`, under which it sends none.
+        if routing["replayPolicy"]?.string != "pinned" { routing["replayPolicy"] = .string("portable") }
         return Self(profile: profile, advanced: WireValue.object(fields).pretty, routing: routing,
                     allowFallbacks: fields["compat"]?.object?["allowFallbacks"]?.bool == true)
     }

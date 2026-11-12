@@ -25,6 +25,11 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var providerItems: [JSON]? = nil
     public var providerIdentity: JSON? = nil
     public var providerBinding: JSON? = nil
+    /// The reply was stored by a request whose connection sends reasoning
+    /// back (`Profile.reasoning == .send`): its provider items are replayed.
+    /// A reply without the mark (every reply before 0.1.138, and those of a
+    /// connection that never sends or pins a route) is sent as it always was.
+    public var reasoningReplay: Bool? = nil
     public var presentationSourceID: String? = nil
     public var operationID: String? = nil
     public var responseTimeline: ResponseTimeline? = nil
@@ -111,6 +116,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let providerItems { value["nativeProviderItems"] = .array(providerItems) }
         if let providerIdentity { value["nativeProviderIdentity"] = providerIdentity }
         if let providerBinding { value["nativeProviderBinding"] = providerBinding }
+        if reasoningReplay == true { value["nativeReasoningReplay"] = true }
         if let toolCallId { value["toolCallId"] = JSON(toolCallId) }
         if let toolName { value["toolName"] = JSON(toolName) }
         if let displayText { value["nativeDisplayText"] = JSON(displayText) }
@@ -135,6 +141,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         providerItems = pi["nativeProviderItems"].isNull ? nil : pi["nativeProviderItems"].list
         providerIdentity = pi["nativeProviderIdentity"].isNull ? nil : pi["nativeProviderIdentity"]
         providerBinding = pi["nativeProviderBinding"].isNull ? nil : pi["nativeProviderBinding"]
+        reasoningReplay = pi["nativeReasoningReplay"].flag == true ? true : nil
         presentationSourceID = pi["nativePresentationSourceID"].text; operationID = pi["nativeOperationID"].text
         responseTimeline = try? JSONDecoder().decode(ResponseTimeline.self, from: pi["nativeResponseTimeline"].data())
         toolCallId = pi["toolCallId"].text; toolName = pi["toolName"].text; isError = pi["isError"].flag ?? false

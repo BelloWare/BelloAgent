@@ -24,6 +24,8 @@ final class CaptureMacIntegrationTests: XCTestCase {
         var profile = ProfileRecord(); profile.baseUrl = base + "/v1"; profile.modelId = "concurrency-fixture"
         profile.modelOutputLimit = 4096
         profile.advancedJSON = WireValue.object(["routing": .object(["replayPolicy": .string("portable")])]).pretty
+        // The fixture gateway pins the text-and-tool-calls wire: since 0.1.138 that is a connection set to never send reasoning back.
+        profile.reasoningReplay = "never"
         let connection = VaultProfile(profile: profile, apiKey: "fixture-secret")
         let vault = ConfigurationVault(storage: MemoryVaultStorage())
         let config = try await vault.update(expectedRevision: 0) {
@@ -193,6 +195,8 @@ final class CaptureMacIntegrationTests: XCTestCase {
             var routing: [String: WireValue] = ["replayPolicy": .string(policy), "reference": .string("strict-v1"), "cacheHeader": .string("x-fixture-cache")]
             if policy == "pinned" { routing["expectedModel"] = .string("fixture-fixed"); routing["replayContract"] = .string("Fixture route fixes exact compatible provider items") }
             profile.advancedJSON = WireValue.object(["routing": .object(routing)]).pretty
+            // The strict fixture's portable route takes text and tool calls only: the owner's "Never" since 0.1.138.
+            if policy == "portable" { profile.reasoningReplay = "never" }
             return VaultProfile(profile: profile, apiKey: "fixture-secret", headers: ["X-Fixture-Contract": "strict-v1"])
         }
         let vault = ConfigurationVault(storage: MemoryVaultStorage())

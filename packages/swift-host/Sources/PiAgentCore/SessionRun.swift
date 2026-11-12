@@ -32,13 +32,14 @@ extension AgentSession {
     /// Ours (owner 2026-10-15): an incomplete with no reason also retries;
     /// an explicit incomplete reason never becomes transient through its text.
     static func isRetryable(_ error: AgentError) -> Bool {
-        guard error.code != "provider_incomplete", !isContextOverflow(error) else { return false }
+        // A refusal of earlier reasoning is the same refusal every time.
+        guard error.code != "provider_incomplete", error.failure != .reasoningRejected, !isContextOverflow(error) else { return false }
         return error.code == "provider_incomplete_unexplained" || PiProviderRules.isRetryableText(error.piMessage)
     }
     /// Case 1 of pi's isContextOverflow: the provider's text names an overflow.
     /// Ours: the gateway's structured overflow codes count too.
     static func isContextOverflow(_ error: AgentError) -> Bool {
-        guard error.code != "provider_incomplete" else { return false }
+        guard error.code != "provider_incomplete", error.failure != .reasoningRejected else { return false }
         return error.failure?.contextRejection == true || PiProviderRules.isOverflowText(error.piMessage)
     }
     static func httpStatus(in message: String) -> Int? {
@@ -276,7 +277,10 @@ extension AgentSession {
                     // room for an intact-history summary before this request.
                     // A compaction that cannot be made leaves the intact
                     // request to go: the gateway decides what overflows.
-                    if !resumingFailedRequest, try await compactAtThreshold(prepared.count.requestTokens,instructions:prepared.instructions) {
+                    // After "Continue without earlier reasoning" the context is
+                    // another one: whether it still needs a summary is asked again.
+                    let recheck=recheckCompactionOnRetry; recheckCompactionOnRetry=false
+                    if !resumingFailedRequest || recheck, try await compactAtThreshold(prepared.count,instructions:prepared.instructions) {
                         if !drained, try await drainSteering() { overflowRecoveryAttempted=false }
                         prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }
@@ -284,6 +288,8 @@ extension AgentSession {
                     var recovered=false, completed: ModelReply?
                     while completed == nil {
                         try Task.checkCancellation()
+                        // Over the window with nothing adopted to relieve it: said once per task, then sent whole.
+                        try noteOverWindow(prepared.count)
                         let dispatchProfile=try turnProfile.dispatching(prepared.count)
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus = .running; modelActive=true; event("message_start")
@@ -300,8 +306,19 @@ extension AgentSession {
                                 guard userDelivered || agentDelivered else { return nil }
                                 overflowRecoveryAttempted=false
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
+                                // What was delivered may have carried the retried request over the window.
+                                try noteOverWindow(prepared.count)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
                             })
+                        } catch let error as AgentError where reasoningWidening(error) != nil {
+                            // The request the owner's Continue sent again was
+                            // refused too: what is left in it is this model's
+                            // own earlier reasoning, which that answer covers.
+                            // Sent once more without it, and not again.
+                            if let partial=interruptedPartial(attemptIDs:error.attemptID.map { [$0] }) { try append(partial) }
+                            partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
+                            try widenReasoningWithholding(reasoningWidening(error) ?? [])
+                            prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                         } catch let error as AgentError {
                             // Case 1 of pi's _checkCompaction: compact and retry once.
                             // A task whose automatic compaction already failed is not summarized again: the overflow pauses the chat.
@@ -338,6 +355,10 @@ extension AgentSession {
                         // automatic summary be paid for (0.1.137's one summary
                         // between replies), as it renews the overflow recovery.
                         automaticSummarySpent = false
+                        // And the request "Continue without earlier
+                        // reasoning" sent again was taken (0.1.138): a later
+                        // refusal is a question of its own, as after a whole reply.
+                        reasoningRetry = nil
                         try Task.checkCancellation()
                         await flushRequestLinks()
                         try persistState(active:true)
@@ -370,7 +391,7 @@ extension AgentSession {
                     do { try append(assistant) } catch { partialReplyUnsaved=true; flushStreamed(as:assistant.id); throw error }
                     cumulativeUsage.observe(reply.usage)
                     // A reply of the model: the next automatic summary may be paid for.
-                    automaticSummarySpent=false
+                    automaticSummarySpent=false; reasoningRetry=nil
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()
@@ -433,7 +454,10 @@ extension AgentSession {
                 stop(userInitiated:false)
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
             }
-            let error: Error = familyStopReason ?? error
+            var error: Error = familyStopReason ?? error
+            // A provider's refusal of earlier reasoning is the owner's
+            // question, kept with the failed run until it is answered.
+            if !cancelled, budgetError == nil, familyStopReason == nil, let held = holdRejectedReasoning(error) { error = held }
             setFamilyWaiting(false)
             // Paused, not failed: Resume goes on from here once the limit is
             // raised. A managed child's turn is parked by its coordinator.

@@ -6,6 +6,12 @@ import Vision
 class ModelCatalogEndpointTestCase: XCTestCase {
     fileprivate let endpoint = ModelCatalogEndpoint()
 
+    /// A list in hand answers at once and is read again behind: wait for that read.
+    @MainActor fileprivate func readBehind(_ catalog: ModelCatalog, _ profile: ProfileRecord) async {
+        for _ in 0..<2_000 where catalog.entry(for: profile).loading { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(catalog.entry(for: profile).loading, "The read behind the list never finished")
+    }
+
     /// The test host does not expose SwiftUI virtual nodes through in-process
     /// accessibility getters. Read the actual own-window pixels instead, so
     /// stale/unrendered picker content cannot pass through a cache assertion.
@@ -201,8 +207,10 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         let cached = await catalog.load(profile: profile, credential: credential)
         XCTAssertEqual(cached, listed, "File edits follow the same five-minute cache as remote catalogs")
         clock.date = clock.date.addingTimeInterval(301)
-        let refreshed = await catalog.load(profile: profile, credential: credential)
-        XCTAssertEqual(refreshed, ["updated"])
+        let inHand = await catalog.load(profile: profile, credential: credential)
+        XCTAssertEqual(inHand, listed, "An expired list answers as it is and is read again behind")
+        await readBehind(catalog, profile)
+        XCTAssertEqual(catalog.entry(for: profile).models, ["updated"])
         try Data(#"[{"id":"forced"}]"#.utf8).write(to: file)
         let forced = await catalog.load(profile: profile, force: true, credential: credential)
         XCTAssertEqual(forced, ["forced"])
@@ -346,6 +354,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         var calls = await fetches.calls; XCTAssertEqual(calls, 1, "A catalog list stays fresh within the five-minute window")
         clock.date = clock.date.addingTimeInterval(120)
         _ = await working.load(profile: profile) { "key" }
+        await readBehind(working, profile)
         calls = await fetches.calls; XCTAssertEqual(calls, 2, "A catalog older than five minutes is fetched again on the next access")
 
         let broken = ModelCatalog(readBundled: { XCTFail("A broken custom catalog must not fall back to the bundle"); return [] }, fetchCatalog: { _, _ in throw ModelCatalogEndpoint.Failure.http(500) })
@@ -374,11 +383,14 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         clock.date = clock.date.addingTimeInterval(3_601)
         let stale = await flaky.load(profile: profile) { "key" }
         XCTAssertEqual(stale, ["cat-1"], "A failed hourly refresh keeps the last list")
+        await readBehind(flaky, profile)
         XCTAssertEqual(flaky.entry(for: "p").error, ModelCatalogEndpoint.Failure.http(503).errorDescription)
+        XCTAssertEqual(flaky.entry(for: "p").models, ["cat-1"])
         _ = await flaky.load(profile: profile) { "key" }
         var calls = await fetches.calls; XCTAssertEqual(calls, 2, "A failure is not retried immediately")
         clock.date = clock.date.addingTimeInterval(31)
         _ = await flaky.load(profile: profile) { "key" }
+        await readBehind(flaky, profile)
         calls = await fetches.calls; XCTAssertEqual(calls, 3, "The failure backoff expires")
         _ = await flaky.load(profile: profile, force: true) { "key" }
         calls = await fetches.calls; XCTAssertEqual(calls, 4, "Refresh forces a fetch")

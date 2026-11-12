@@ -47,6 +47,11 @@ enum JournalRecordKind {
     static let taskTerminal = "pi-app.task-terminal.v1"
     /// A compaction that failed, so the same one is not tried again.
     static let compactionFailure = "pi-app.compaction-failure.v1"
+    /// The owner agreed to go on without the reasoning of the replies it
+    /// names, after a provider refused it (`AgentSession.withholdReasoning`).
+    /// A reader that does not know the kind (0.1.137 and earlier) skips it
+    /// and sends those replies by its own rules.
+    static let reasoningWithheld = "pi-app.reasoning-withheld.v1"
     /// The chat's spend (`SessionSpend`).
     static let cost = "pi-app.cost.v1"
     /// The chat moved to another connection: from here on the journal is

@@ -4,10 +4,18 @@ extension AgentSession {
     /// One frozen normal context plus one request-local instruction. No tool
     /// dispatch continuation exists on this path, even if the gateway ignores
     /// tool_choice. Preflight and dispatch use the same builder and controls.
+    static let answerAsText = "The reply to the request above was not a checkpoint: it called a tool or was empty. Nothing was run. No tool can be called here, and the owner's messages above are not to be answered now. Reply with the checkpoint only, as plain text under the four headings."
+    /// Whether a summary reply that is no checkpoint is worth asking for once
+    /// more: it completed, and said nothing or called a tool. A refusal and a
+    /// reply the output cap cut would come back the same.
+    func asksAgain(_ reply: ModelReply, _ error: AgentError) -> Bool {
+        ["compaction_empty_summary","compaction_unexpected_tool_call"].contains(error.code) && reply.terminal?.status == "completed"
+            && reply.terminal?.refusal != true && reply.terminal?.incompleteReason == nil && !reply.truncated && reply.message.stopReason != "length"
+    }
     func summarize(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile,
-                   originalProfile: Profile, revision: UInt64) async throws -> String {
+                   originalProfile: Profile, revision: UInt64, overWindow: Bool = false) async throws -> String {
         let sessionID=id, cacheSessionID=promptCacheSessionID
-        func sized(_ profile: Profile) async throws -> RequestContextCount {
+        func sized(_ profile: Profile, _ messages: [ChatMessage]) async throws -> RequestContextCount {
             let worker=Task.detached(priority:.userInitiated) {
                 let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,
                     sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:true)
@@ -18,7 +26,7 @@ extension AgentSession {
             try validateCompaction(revision,profile:originalProfile)
             return count
         }
-        var profile=profile, count=try await sized(profile)
+        var profile=profile, count=try await sized(profile,messages)
         // The trigger leaves room for the whole allowance plus a growth
         // reserve, but one round (a few large results at once) can add more
         // than that reserve. The context still fits its window then, and
@@ -28,10 +36,21 @@ extension AgentSession {
         let room=count.contextWindow-count.safetyMargin-count.requestTokens
         if !count.fits, room >= min(profile.maxOutput,compactionPolicy.minimumSummaryTokens) {
             profile=try compactionPolicy.summaryProfile(originalProfile,cap:min(profile.maxOutput,room))
-            count=try await sized(profile)
+            count=try await sized(profile,messages)
             compactionState["outputAllowance"]=JSON(profile.maxOutput); compactionState["allowedOutputTokens"]=JSON(profile.maxOutput)
+        } else if !count.fits, overWindow {
+            // 0.1.138: the turn's own request is over the window as declared
+            // and would go out whole (`noteOverWindow`). The summary request
+            // is that request and one instruction, and it is the way back
+            // under the window: it goes too, with the least a summary is
+            // allowed and never a squeezed cap, and the gateway decides. A
+            // refusal is `compaction_too_large` below: sent, not used.
+            profile=try compactionPolicy.summaryProfile(originalProfile,cap:min(profile.maxOutput,compactionPolicy.minimumSummaryTokens))
+            count=try await sized(profile,messages)
+            compactionState["outputAllowance"]=JSON(profile.maxOutput); compactionState["allowedOutputTokens"]=JSON(profile.maxOutput)
+            compactionState["overWindow"]=true
         }
-        guard count.fits else {
+        guard count.fits || overWindow else {
             throw AgentError("compaction_too_large", "The intact history (about \(count.requestTokens) tokens), checkpoint instruction and \(profile.maxOutput)-token summary allowance do not fit this model's \(profile.contextWindow)-token window. Nothing was sent, and the context is unchanged. Use a larger context window or start a new chat.")
         }
         compactionState["summaryInput"] = count.json
@@ -40,9 +59,29 @@ extension AgentSession {
         // One policy for the whole summary request: a change applies from the next one.
         let retry = retrySettings
         do {
+            let limit=min(max(1,compactionPolicy.maximumAttempts),1+max(0,retry.enabled ? retry.maxRetries : 0))
             let reply = try await summaryReply(messages,instructions:instructions,tools:tools,profile:profile,originalProfile:originalProfile,revision:revision,
-                limit:min(max(1,compactionPolicy.maximumAttempts),1+max(0,retry.enabled ? retry.maxRetries : 0)),retry:retry,used:&used)
-            return try adopt(reply,cap:profile.maxOutput)
+                limit:limit,retry:retry,used:&used)
+            do { return try adopt(reply,cap:profile.maxOutput) }
+            catch let miss as AgentError where asksAgain(reply,miss) {
+                // 0.1.138 (as Bello Hub): asked once more, in the same
+                // compaction. The request is the first one, item for item,
+                // and one line after it, so it extends that request's prefix.
+                // The first answer stays a failed attempt with its spend, and
+                // nothing of it is shown as a summary or run. A second miss
+                // is the failure it was.
+                var line=ChatMessage(role:"user",content:[textBlock(Self.answerAsText)])
+                line.sourceMessageIDs=[]
+                let again=messages+[line]
+                guard try await sized(profile,again).fits || overWindow else { throw miss }
+                try discardIncompleteSummary(attempt:reply.message.requestAttemptIDs?.last ?? compactionAttemptIDs.last)
+                operationStatus("Summary reply was not a checkpoint (" + (miss.code == "compaction_empty_summary" ? "no text" : "a tool call") + "); asking once more")
+                compactionState["askedAgain"]=true
+                var usedAgain=0
+                let second = try await summaryReply(again,instructions:instructions,tools:tools,profile:profile,originalProfile:originalProfile,revision:revision,
+                    limit:limit,retry:retry,used:&usedAgain)
+                return try adopt(second,cap:profile.maxOutput)
+            }
         } catch let error as AgentError where Self.isContextOverflow(error) {
             throw AgentError("compaction_too_large", "The gateway rejected the intact summary request as longer than the model's window. The context is unchanged; no alternate summary was sent.", attemptID:error.attemptID)
         }

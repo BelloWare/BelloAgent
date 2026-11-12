@@ -177,8 +177,11 @@ extension AgentSession {
         submission.contextWindow = overrides["contextWindow"].int; submission.maxOutputTokens = overrides["maxOutputTokens"].int
         submission.modelOutputLimit = overrides["modelOutputLimit"].int; submission.input = try NativeHostService.turnInput(overrides["input"])
         _ = try profile.overriding(submission)
+        // "Continue without earlier reasoning": written down before the
+        // request it changes. A plain Retry of the same failure asks again.
+        if !overrides["withoutEarlierReasoning"].isNull { try withholdReasoning(answering: overrides["withoutEarlierReasoning"]["rejection"].text) }
         currentTurnID = submission.turnID
-        activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; try persistState(); launch()
+        activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; reasoningRejection=nil; try persistState(); launch()
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         turnSubagentModels = submission.subagentModels ?? subagentModelGrants
@@ -217,7 +220,7 @@ extension AgentSession {
         // not: like the task's suppression, the one summary between replies
         // is counted afresh, so a chat whose last summary was followed by no
         // reply is not left without recovery for good.
-        if newTask { automaticSummarySpent=false }
+        if newTask { automaticSummarySpent=false; reasoningRetry=nil }
         if newTask { try startAgentEpoch(startingFresh:true) }
         // The conversation holds it now; the saved state no longer needs to.
         if delivering?.submission.turnID == submission.turnID { delivering=nil }

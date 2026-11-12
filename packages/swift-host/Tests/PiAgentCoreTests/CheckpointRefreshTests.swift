@@ -130,6 +130,28 @@ final class CheckpointRefreshTests: HelperTestCase {
         XCTAssertEqual(after.failedCompactionFingerprint, "source")
     }
 
+    /// 0.1.138: what a model is no longer sent after the owner's "Continue
+    /// without earlier reasoning" stays so through a refreshed checkpoint.
+    /// Its record lies before the checkpoint, where an open that resumes
+    /// from the checkpoint does not read it again; without it the refused
+    /// reasoning would be sent once more and the owner asked a second time.
+    func testARefreshedCheckpointKeepsWhatAModelIsNoLongerSent() throws {
+        let fixture = try RefreshJournalFixture(root: temporaryDirectory(), profile: fixtureProfile())
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try fixture.journal.append(["type":"custom", "customType":JSON(JournalRecordKind.reasoningWithheld),
+                                    "data":["rejection":"q1", "route":"route-of-the-refusing-model", "replies":["reply-1", "reply-2"], "own":false]])
+        try fixture.state(RefreshJournalFixture.settledState)
+        var replay = try fixture.replay()
+        let checkpoint = try XCTUnwrap(replay.captureSettledCheckpoint(policy: CheckpointRefreshPolicy()))
+        try checkpoint.write(for: fixture.url)
+        let loaded = try XCTUnwrap(AgentSession.loadCheckpoint(checkpoint, url: fixture.url))
+        var resumed = JournalReplayConsumer(id:"refresh", header:fixture.journal.headerCheck, marker:fixture.journal.markerCheck, spendTracked:false)
+        resumed.resume(from:checkpoint, loaded:loaded)
+        let before = try replay.finished(), after = try resumed.finished()
+        XCTAssertEqual(before.reasoningWithheld, ["route-of-the-refusing-model": ["reply-1", "reply-2"]])
+        XCTAssertEqual(after.reasoningWithheld, before.reasoningWithheld, "The checkpoint carries the owner's answer")
+    }
+
     func testMetadataAndContextBudgetsSkipWithoutTruncatingThePreviousCheckpoint() throws {
         let fixture = try RefreshJournalFixture(root: temporaryDirectory(), profile: fixtureProfile())
         defer { try? FileManager.default.removeItem(at: fixture.root) }

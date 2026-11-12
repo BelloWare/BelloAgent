@@ -11,6 +11,10 @@ struct SubagentOrigin: Codable, Sendable, Equatable {
     var frozenResources: ResourceSnapshot? = nil
     var taskName: String? = nil
     var forkTurns: String? = nil
+    /// The replies of the seed whose reasoning the parent no longer sends
+    /// to a model that refused it (`AgentSession.effectiveReasoningWithheld`,
+    /// by `reasoningRouteKey`), frozen with the seed.
+    var reasoningWithheld: [String: [String]]? = nil
     var codexContext: AgentCodexContext? = nil
 
     /// Older v3 recovery can finish a marker-only child's origin without the

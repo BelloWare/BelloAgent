@@ -4,8 +4,9 @@ import XCTest
 /// The output budget is metadata: a local reserve that decides when a chat
 /// compacts and never a cap on the wire. A conversation request carries the
 /// model's catalog ceiling, clipped as pi's clampMaxTokensToContext clips it
-/// (window − pi's estimate − 4,096, at least 1); bounded tasks carry their own
-/// small caps. Like pi, no estimate ever stops a turn before its request.
+/// (window − pi's estimate − 4,096) while that room holds a reply, and unclipped
+/// where it does not (0.1.138); bounded tasks carry their own small caps. Like
+/// pi, no estimate ever stops a turn before its request.
 final class OutputCapDispatchTests: HelperTestCase {
     private func session(_ client: ScriptClient, profile: Profile, root: URL, autoCompaction: Bool = false, titleTask: Bool = false) throws -> AgentSession {
         try AgentSession(id: "cap", profile: profile, apiKey: "synthetic-cap-fixture-secret", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
@@ -71,7 +72,11 @@ final class OutputCapDispatchTests: HelperTestCase {
         await session.close()
     }
 
-    func testInputBeyondTheWindowIsStillSentWithTheSixteenTokenCapPiSends() async throws {
+    /// Until 0.1.138 this request carried pi's 16 tokens: the room a window
+    /// already full leaves, raised to the least Responses accepts. A reply cut
+    /// there was taken for an answer, so the ceiling now goes unclipped
+    /// (`PiContext.outputCap`, `OverWindowTests`).
+    func testInputBeyondTheWindowIsStillSentWithTheCeilingNotASqueezedCap() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var raw = try fixtureProfile().raw; raw["contextWindow"] = 4_000; raw["maxOutputTokens"] = 1_000; raw["modelOutputLimit"] = 5_000
         let client = ScriptClient([answer("the gateway decides")])
@@ -82,7 +87,7 @@ final class OutputCapDispatchTests: HelperTestCase {
         XCTAssertEqual(requests, 1, "pi never refuses a request on its estimate; the gateway decides")
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
         let profiles = await client.profiles
-        XCTAssertEqual(try XCTUnwrap(profiles.first).wireOutputLimit, 16, "clampMaxTokensToContext leaves one token, and buildParams sends at least 16")
+        XCTAssertEqual(try XCTUnwrap(profiles.first).wireOutputLimit, 5_000, "No room is left to clip to: the model's ceiling, never the 16 tokens pi sends")
         await session.close()
     }
 

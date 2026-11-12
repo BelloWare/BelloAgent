@@ -42,6 +42,8 @@ final class NativeUIAcceptanceTests: XCTestCase {
             profile.name = alias == "fixture-fast" ? "Responses · Fast model" : "Synthetic Responses"
             let reasoning = alias == "fixture-fast" ? "\"reasoning\":false,\"thinkingLevel\":\"default\"" : "\"reasoning\":true,\"thinkingLevel\":\"high\""
             profile.advancedJSON = "{\(reasoning),\"routing\":{\"replayPolicy\":\"portable\",\"reference\":\"Synthetic UI gateway accounting contract v1\",\"cacheHeader\":\"x-fixture-cache\",\"modelHeader\":\"x-fixture-model\"}}"
+            // The fixture gateway pins the text-and-tool-calls wire: since 0.1.138 that is a connection set to never send reasoning back.
+            profile.reasoningReplay = "never"
             return VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")
         }
         // This synthetic profile seed belongs only to the XCTest harness. It

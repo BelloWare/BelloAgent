@@ -119,6 +119,8 @@ extension WorkspaceModel {
         }
         configuration = saved; configurationLoaded = true
         profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
+        // A catalog kept for a connection that is no longer saved goes.
+        modelCatalog.keepStored(for: Set(profiles.map(\.id)))
         // The tabs come back once the projects they were opened in are known.
         tabs.restore()
         // ⌘P forgets a project gone or no longer trusted.
@@ -409,7 +411,7 @@ extension WorkspaceModel {
         // The connection is gone from the vault; its model list must go too.
         // A cached entry outlived the connection for the rest of the session,
         // and a new connection that reused the id would open on its models.
-        modelCatalog.invalidate(profileID: id)
+        modelCatalog.forget(profileID: id)
         if profileChoice == id { profileChoice = profiles.first?.id ?? "" }
         for item in affected { displays[item.id]?.notice = Self.connectionDeletedNotice }
     }

@@ -895,12 +895,106 @@ sidebar opens 300 points wide.
 
 A reply that reaches the output limit is a complete row with `stopReason`
 "length", shown with a warning under it (ask the model to continue); the
-turn ends idle and queued follow-ups go on. The output budget is metadata:
+turn ends idle and queued follow-ups go on. It is not a task that completed:
+its outcome is `output-limited`, and from 0.1.138 an idle chat whose last task
+ended that way says so in its snapshot (`stoppedEarly: "output-limit"`), so a
+client that reads only `state` does not take a cut reply for a finished one.
+The output budget is metadata:
 it is never sent as a limit and never fails a turn. A conversation request
 carries the model's catalog ceiling as `max_output_tokens`, clipped to the
-room the context estimate leaves in the window, or no limit at all when the
-catalog gives none; bounded tasks (connection test, title, compaction
-summary) send their own small caps. The budget only sizes the local reserve
+room the context estimate leaves in the window while that room still holds a
+reply, or no limit at all when the catalog gives none; bounded tasks
+(connection test, title, compaction summary) send their own small caps.
+
+**The output limit is never squeezed toward nothing (0.1.138).** Pi clips the
+ceiling to `window − estimate − 4,096` and sends that room however small, at
+least 16 tokens. Live, 2026-11-12: a model asked for ten file reads in one
+batch; the next request measured 78,362 tokens in a window declared as 50,000,
+went out with `max_output_tokens: 16`, and its 17-token reply, cut at that cap,
+ended the task with the chat idle. The decision, as in Bello Hub: what must
+stay (the task's request, steering, the newest batch of results) is never
+dropped, a declared window can be conservative, so the request goes out whole
+and with the ordinary limit. `PiContext.outputCap`: the clip applies while the
+room is at least the chat's output reserve, or 4,096 tokens where the reserve
+is larger (and never more than the ceiling itself); with less room the ceiling
+goes unclipped and the gateway decides, as it already does for the input.
+Every request inside the usable input of a window of 32,768 tokens or more has
+that room, so a chat that compacts in time sends what it sent before. A
+gateway that counts the limit against its window refuses such a request, and
+that refusal is the context overflow it always was.
+
+**Over the window, said once per task (0.1.138).** When the request about to
+be sent does not fit beside the reply's reserve (`RequestContextCount.fits`)
+in a chat that compacts by itself, nothing that could be summarized made room.
+The chat gets one presentation row for the task, an execution record like a
+compaction's: "Context · This request is about 78,362 tokens, more than the
+41,308 that this model's 50,000-token window leaves for input. Nothing was
+summarized away, and it is sent whole: the provider may refuse it, or cut the
+reply short." It is journaled and shown, never sent to the model, and the
+task's own rows remember it: a Stop and Resume, a Retry or a reopen do not say
+it again; the next task does. It is not said where the owner turned automatic
+compaction off, for a bounded task, or after a summary that was paid for and
+failed, whose row has said why (`SessionOverWindow.swift`).
+
+**Before a request goes out over the window, what a refusal would allow is
+done first (0.1.138).** The second live run, 2026-11-12, a 32,768-token window
+with reasoning sent back: one file's result (7,200 tokens) and the reasoning
+that asked for it are required rows, and with the checkpoint they pass half the
+usable input. So neither the ordinary plan nor the last resort could be made,
+ten times, each costing nothing; the turn went on whole to 80,982 tokens, and
+finished only because the provider's real window was larger. 0.1.137 on the
+same task compacted five times: without the reasoning the same rows fit the
+half. The recovery plan existed for exactly these rows, but only after a
+provider's context rejection, which a generous provider never gives.
+
+When the request about to be sent does not fit beside the reply's reserve
+(`RequestContextCount.fits` is false: the state the row above describes) and a
+compaction is due, `compactAtThreshold` passes `overWindow`:
+
+- the ordinary plan comes first; where it cannot be made, the plan of **only
+  what must stay** with the checkpoint is made, on recovery's terms: the
+  replacement fits a normal request in tokens and bytes at the whole summary
+  allowance, and the completed checkpoint must fit and save the safety margin
+  (`PreparedCompaction.recoveryOnly`);
+- **the summary request goes out though it is over the window as declared**,
+  with the least a summary is allowed (8,192 tokens), never a squeezed cap. It
+  is the turn's own request and one instruction, the request that was about to
+  be sent whole anyway, and it is the way back under the window. A provider
+  that refuses it has refused a summary that was sent: `compaction_too_large`,
+  automatic compaction ends for the task, the turn's request goes whole and
+  the provider decides that too. After a context rejection the old rule
+  stands: the provider has just refused that size, and a summary request that
+  does not fit is not sent.
+
+Nothing else changes: at most one paid summary between two replies; a summary
+sent and not used ends the task's automatic compaction; a plan that cannot be
+made costs nothing and is tried again when the chat changes (the mode is part
+of `CompactionInputs`). A request past the working threshold that still fits
+is planned as before, and where no plan can be made it goes as it is: Astra's
+128,000-token case (60,000 tokens in flight at the threshold, planned one
+round later) is unchanged, and the last resort still means what it said, for
+required rows that fit the half at the summary's expected length. Rows that do
+not, a large result with its reasoning in a small window, are now relieved at
+the next request instead of never. The over-window row is left for what even
+this cannot relieve: nothing older to summarize, or required rows that do not
+fit beside the checkpoint.
+
+**A summary with no text is asked for once more (0.1.138, as Bello Hub).** Live,
+2026-11-12: one "Compact now" in three on a small Gemini model completed with
+reasoning and no text, and the chat ended in an error. When a summary request
+completes with no text, or with a tool call instead of text, the same request
+is sent once more, item for item, with one user line after its instruction
+(`AgentSession.answerAsText`: "The reply to the request above was not a
+checkpoint: it called a tool or was empty. Nothing was run. No tool can be
+called here, and the owner's messages above are not to be answered now. Reply
+with the checkpoint only, as plain text under the four headings."), so it
+extends the first request's prefix. The first answer is a failed attempt with
+its spend, none of it shown as a summary or run. A second miss is the failure
+it was: an error for a manual compaction, and for an automatic one the task's
+sent-and-unused summary. A refusal, a reply cut by the output cap or one the
+provider ended early is not asked for again. The second ask is part of the
+same compaction: it is not a second paid summary under the one-between-replies
+rule, and it has its own transient-retry budget. Manual and automatic alike. The budget only sizes the local reserve
 that decides when a chat compacts, and a request whose input fits the window
 is always sent. The helper's HTTP stream buffers without limit,
 so a consumer busy journaling or notifying the app never loses a chunk to a
@@ -1137,7 +1231,15 @@ signed app's bundled `bello-agent.models.json` is the sole source, also for
 legacy decoded connections. It is copied directly from the reviewed repository
 catalog and parsed by the same endpoint parser. Loading the bundled list never
 reads credentials or contacts `/v1/models`; a missing/corrupt bundle resource
-surfaces an error. Source changes invalidate cached lists. Optional flat
+surfaces an error. Source changes invalidate cached lists. A list in hand is
+used (owner, 2026-11-12: "Do both for catalog loading"): a custom catalog older
+than five minutes is read again behind its callers, and a saved connection's
+last good custom catalog is kept in `ModelCatalogs/` under the app's state
+folder (models and a digest of the source only: no address, key or header), so
+a launch has it at once and a fresh read replaces it behind; only Refresh, or a
+connection with no list at all, waits for the catalog's source. A kept list
+belongs to one connection and one source and goes with a deleted connection
+(`docs/Model-Catalog.md`, "The list in hand"). Optional flat
 `catalogSources` references in the vault separate catalog authority from request
 profile snapshots. Every list consumer, descriptor/effort lookup and mini-model
 recommendation resolves this authority; requests still use the original profile.
@@ -1407,6 +1509,41 @@ one bounded sentence: keep a short owner request or constraint as written where
 the wording matters, and name the interrupted step. No live model run has
 validated either text.
 
+**A summary records; it does not order work redone (0.1.138).** Live,
+2026-11-12, a small OpenAI model on the end-to-end test's mid-run task: the
+task forbade `offset` and `limit`, the model passed both as it always does, and
+every summary ruled the reads invalid and ended "If the task is resumed,
+restart at `evidence/part-01.txt`". The agent obeyed: ten compactions, never
+past part-09. Bello Hub's summary of the same task on the same model recorded
+the progress; its instruction says "Say what work is in progress" where this
+one said only to name the interrupted step. Two additions, and nothing else
+moves (the summary stays first; the prompt keeps its structure and headings):
+
+- the instruction gains one sentence after the interrupted step: "Record work
+  that was done as done, noting where it departed from what was asked; next
+  steps go on from the current state and never tell the reader to redo or
+  restart finished work.";
+- a mid-task checkpoint's own line gains a clause: "… without asking the owner
+  to repeat them, and without redoing work the summary records as done."
+
+The line is frozen in each checkpoint's record, so a checkpoint made by
+0.1.137 replays 0.1.137's words byte for byte, and 0.1.137 renders whatever a
+record holds. Neither text has been validated on a live model yet; the
+harness's own prompt no longer forbids the arguments, which alone made the
+same model pass.
+
+**Not built: a guard against compactions that make no progress.** The
+suppression rules above bound summaries that fail; nothing bounds summaries
+that succeed while the task goes round in circles. A cheap guard would count,
+per task, adopted automatic checkpoints since the task's context last held
+something new: at each adoption compare the set of tool calls (name and
+arguments) made since the previous checkpoint with the set made before it; two
+adoptions in a row that add no new call would end automatic compaction for the
+task as a failed summary does, with a row that says the task is repeating
+itself. It costs a hash set per task and no request. It is described here and
+not built: it would also stop a task that legitimately polls, and the wording
+above removes the one cause seen.
+
 A new unanswered input and current structured skill/permission carriers remain
 authoritative; a summary does not authorize tools or change selection or
 permission state, and inherited or agent-authored inputs keep their provenance.
@@ -1482,37 +1619,38 @@ the existing chronological operation history; summary usage never replaces the
 normal-request context observation. The request inspector recognizes both the
 new appended instruction and historical saved summary formats.
 
-**Encrypted reasoning (0.1.137, in part).** Owner, 2026-11-11: "well, encrypted
+**Encrypted reasoning (0.1.138).** Owner, 2026-11-11: "well, encrypted
 reasoning should be not ignored… unless it got rejected by litellm due to model
 switch, which then we need user confirmation to proceed with previous encrypted
 reasoning removed or something like that, while keep new encrypted reasoning".
+The whole contract is `docs/Reasoning-Replay.md`; in short:
 
-What holds now. Every Responses request of a reasoning model asks for
-`reasoning.encrypted_content`, and a reply's provider items are journaled as
-received with the route that produced them (`providerItems`,
-`providerBinding`, `providerIdentity`). Whether they are sent again is the
-connection's replay policy (`ProviderClient.replayItems`): a **pinned** route
-replays them byte for byte, each before the calls or text it led to; a
-compaction changes nothing in that, since it keeps whole rows: the summary
-request, the request after a compaction and the rounds a fallback keeps all
-carry their reasoning, and a summarized round takes its reasoning with it. In
-0.1.137 a replayed reasoning item is also **counted** where no reply's usage has
-measured it yet (`RequestContextCounter.inputTokens`: its ciphertext's length
-over four, an upper bound), so the fallback and the 50% target see it, and the
-32 MiB check sees its bytes.
-
-What does not hold yet. Reasoning is still left out without a word in three
-cases the owner's rule covers: a connection whose policy is **portable** (the
-onboarding default) never replays it; a reply written before the chat moved to
-another saved connection, or under a per-turn model override, is replayed
-portably (`Routing.swift`, `Profile.overriding`); and an unset policy refuses
-the request (`opaque_replay_policy`) instead of asking. Replaying by default
-needs the other half of the rule at the same time: recognising the gateway's
-rejection of earlier reasoning after a model or route change, pausing with a
-question (the app's `ChatQuestion` confirmation, as the connection switch asks
-before reasoning is left behind), and a durable "reasoning before this point is
-no longer replayed" record. That is not in this release; nothing here strips
-reasoning that was replayed before.
+- Every Responses request of a reasoning model asks for
+  `reasoning.encrypted_content`, and a reply's provider items are journaled as
+  received. A connection **sends reasoning back by default**
+  (`Profile.reasoning`): a reply stored from 0.1.138 on is marked and its
+  reasoning goes with every later request, also after a model switch, a
+  per-turn override or a connection move. A reply without the mark goes
+  exactly as 0.1.137 sent it. "Never" and a pinned route are the owner's
+  explicit choices. Until 0.1.137 the default (`portable`) sent none, and an
+  unset policy refused the request.
+- A compaction changes nothing in that: it keeps whole rows, the summary
+  request is built by the same projection, and a replayed reasoning item is
+  counted where no reply's usage has measured it.
+- A provider's refusal of that reasoning (`ReasoningRejection`: substrings of
+  the provider's text as LiteLLM passes it on, in an HTTP 400 body or a failure
+  frame after HTTP 200) ends the run as the failure `reasoning_rejected`, whose
+  notice says what happened ("{model} can't use the earlier reasoning") and
+  carries one button, **Continue without earlier reasoning**, which acts at
+  once: no sheet, nothing by itself, there again after a relaunch. Continue
+  is saved for the model that refused: the request goes again without the
+  reasoning other models wrote; refused again, once more without its own,
+  without asking again; then it is the provider's ordinary error. A model
+  that never refused gets everything, and what is made afterwards is sent
+  and asked about again if refused. No tool runs again; stored history is
+  never rewritten. The same design as Bello Hub's.
+- A pinned route compares model names without what a gateway puts before them
+  (`gemini/gemini-3.5-flash-lite` and `gemini-3.5-flash-lite` are one model).
 
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and

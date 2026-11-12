@@ -55,6 +55,26 @@ final class AgentCodexRuntimeTests: HelperTestCase {
         XCTAssertTrue(second.contains { $0.text.contains("Second task") })
         await coordinator.drain(); await parent.close()
     }
+    /// 0.1.138 met dev/next's fork path here: an agent forked with its
+    /// parent's whole context starts without the reasoning a model of the
+    /// parent is no longer sent, or its first request would be refused the
+    /// same way and nobody could be asked in a sub-agent.
+    func testAForkedAgentInheritsWhatItsParentIsNoLongerSent() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:CodexProbeClient([]),tools:RecordingTools(),traces:TraceStore())
+        let coordinator = AgentSteeringCoordinator(open:{ _,_ in throw AgentError("fixture","Publication only") })
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator,codex:true)
+        try await parent.codexFixtureSeed("SEED")
+        await parent.withholdReasoningFixture(route:"route-of-the-refusing-model",replies:["reply-1"])
+        let call = ToolCall(id:"spawn",name:"spawn_agent",arguments:["task_name":"audit","message":"Task"])
+        let key = try await parent.agentFixtureCall(call,newTask:true)
+        _ = try await coordinator.prepare(call,key:key,parent:parent)
+        let plans = await parent.subagents.plans
+        XCTAssertEqual(plans.values.first?.origin.forkTurns,"all")
+        XCTAssertEqual(plans.values.first?.origin.reasoningWithheld,["route-of-the-refusing-model":["reply-1"]])
+        try await eventually { await parent.agentState().turns.values.first?.status.terminal == true }
+        await parent.close()
+    }
     func testMultiMiBForkAcceptanceJournalAndCheckpointCarryOnlyReferences() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:CodexProbeClient([]),tools:RecordingTools(),traces:TraceStore())
@@ -155,4 +175,9 @@ actor CodexProbeClient: ModelClient {
         guard !replies.isEmpty else { throw AgentError("fixture_exhausted",attempt) }
         return replies.removeFirst()
     }
+}
+
+extension AgentSession {
+    /// As after the owner's "Continue without earlier reasoning" for a model.
+    func withholdReasoningFixture(route: String, replies: [String]) { reasoningWithheld[route, default: []].formUnion(replies) }
 }

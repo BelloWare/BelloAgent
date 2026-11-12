@@ -2,6 +2,8 @@ import Foundation
 
 /// What an automatic compaction's plan depends on (`AgentSession.compactionInputs`).
 struct CompactionInputs: Equatable, Sendable {
+    /// After a context rejection, or before a request that is over the
+    /// window: the modes that admit a plan of only what must stay.
     let recovery: Bool
     let revision: UInt64
     let task: String?
@@ -110,6 +112,11 @@ extension AgentSession {
         "invalid_stream", "incomplete_stream", "response_limit", "invalid_tool_calls", "tool_argument_limit"]
     func recoverableCompactionFailure(_ error: Error) -> Bool {
         guard !Task.isCancelled, !costPaused, accountingFailure == nil, let error=error as? AgentError else { return false }
+        // A summary request refused for the reasoning it replayed is the
+        // owner's question (`holdRejectedReasoning`), not a summary that
+        // was paid for and not adopted: it ends the run, not the task's
+        // automatic compaction.
+        guard !handlesRefusedReasoning(error) else { return false }
         return Self.recoverableCompactionFailures.contains(error.code)
     }
     /// One summary paid for and not adopted per task: every later round
@@ -119,8 +126,8 @@ extension AgentSession {
     /// What a plan depends on: the replayed context and its task, the
     /// request's configuration, and the mode, since recovery admits what a
     /// threshold does not. Presentation rows change none of it.
-    func compactionInputs(reason: String) -> CompactionInputs {
-        CompactionInputs(recovery:reason == "context-rejection",revision:contextMutation,task:taskRootID,profile:turnProfile.raw,resources:appliedSnapshot?.revision)
+    func compactionInputs(reason: String, overWindow: Bool = false) -> CompactionInputs {
+        CompactionInputs(recovery:reason == "context-rejection" || overWindow,revision:contextMutation,task:taskRootID,profile:turnProfile.raw,resources:appliedSnapshot?.revision)
     }
     /// The record that ends a task's automatic attempts. A chat with no
     /// journal yet (a side not saved) holds it in memory, and its first
@@ -151,18 +158,32 @@ extension AgentSession {
     /// - after it, the summary was paid for and not adopted: automatic
     ///   compaction ends for the task, durably.
     /// And one summary at most is paid for between two replies of the model.
-    func automaticCompaction(reason: String) async throws -> Bool {
+    func automaticCompaction(reason: String, overWindow: Bool = false) async throws -> Bool {
         guard !automaticCompactionSuppressed, !automaticSummarySpent else { return false }
-        let inputs=compactionInputs(reason:reason)
+        let inputs=compactionInputs(reason:reason,overWindow:overWindow)
         guard unavailableCompaction != inputs else { return false }
-        do { try await compactContext(reason:reason); return true }
+        do { try await compactContext(reason:reason,overWindow:overWindow); return true }
+        catch where reasoningWidening(error) != nil {
+            // The summary request sent again after the owner's Continue was
+            // refused for the model's own reasoning: that goes too, and the
+            // summary is asked for once more (`widenReasoningWithholding`
+            // allows it once).
+            try widenReasoningWithholding(reasoningWidening(error) ?? [])
+            automaticSummarySpent=false
+            return try await automaticCompaction(reason:reason,overWindow:overWindow)
+        }
         catch where recoverableCompactionFailure(error) {
             if compactionDispatched { try suppressAutomaticCompaction() } else { unavailableCompaction=inputs }
             return false
         }
     }
-    /// The compaction due before the request counted as `tokens`, if any.
-    func compactAtThreshold(_ tokens: Int, instructions: String) async throws -> Bool {
+    /// The compaction due before the request counted as `count`, if any.
+    /// A request that does not fit beside the reply's reserve is over the
+    /// window (`noteOverWindow`): what a provider's refusal would allow is
+    /// allowed before it is sent, a plan of only what must stay and a summary
+    /// request that is itself over the window as declared.
+    func compactAtThreshold(_ count: RequestContextCount, instructions: String) async throws -> Bool {
+        let tokens=count.requestTokens
         guard autoCompaction, !titleTask, !automaticCompactionSuppressed, !automaticSummarySpent else { return false }
         let threshold: Int
         // A budget that cannot hold a summary makes compaction unavailable;
@@ -171,7 +192,7 @@ extension AgentSession {
         do { threshold=try compactionThreshold(requestContext,instructions:instructions,profile:turnProfile,taskStart:atTaskStart) }
         catch where recoverableCompactionFailure(error) { return false }
         guard tokens >= threshold, canCompact else { return false }
-        return try await automaticCompaction(reason:"threshold")
+        return try await automaticCompaction(reason:"threshold",overWindow:!count.fits)
     }
     func validateCompaction(_ revision: UInt64, profile: Profile) throws {
         try Task.checkCancellation()
@@ -179,7 +200,7 @@ extension AgentSession {
             throw AgentError("compact_stale", "Context changed while summarizing. The previous context is retained; compact again when ready.")
         }
     }
-    func compactContext(reason: String = "manual") async throws {
+    func compactContext(reason: String = "manual", overWindow: Bool = false) async throws {
         // Only the manual compaction it was given for carries the focus.
         let focus=reason == "manual" ? compactionFocus : nil; compactionFocus=nil
         let frozen=context.filter(\.replayEligible), revision=contextMutation, originalProfile=turnProfile
@@ -202,7 +223,7 @@ extension AgentSession {
             let policy=compactionPolicy, sessionID=id, taskOpen=reason != "manual" || idleTaskOpen
             let worker=Task.detached(priority:.userInitiated) {
                 try CompactionPlanner.prepare(frozen:frozen,profile:originalProfile,instructions:instructions,definitions:definitions,
-                    sessionID:sessionID,cacheSessionID:frozenCache,taskRoot:frozenTask,taskOpen:taskOpen,policy:policy,reason:reason,focus:focus)
+                    sessionID:sessionID,cacheSessionID:frozenCache,taskRoot:frozenTask,taskOpen:taskOpen,policy:policy,reason:reason,focus:focus,overWindow:overWindow)
             }
             let prepared=try await withTaskCancellationHandler(operation:{ try await worker.value },onCancel:{ worker.cancel() })
             try validateCompaction(revision,profile:originalProfile)
@@ -215,7 +236,7 @@ extension AgentSession {
             compactionState["outputAllowance"]=JSON(cap); compactionState["allowedOutputTokens"]=JSON(cap)
             compactionState["outputAllowanceSource"]=JSON(summaryProfile.wireOutputLimit == nil ? "local-reserve-only" : "summary-generation-cap")
             compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
-            let text=try await summarize(prepared.messages,instructions:instructions,tools:definitions,profile:summaryProfile,originalProfile:originalProfile,revision:revision)
+            let text=try await summarize(prepared.messages,instructions:instructions,tools:definitions,profile:summaryProfile,originalProfile:originalProfile,revision:revision,overWindow:overWindow)
             var summary=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+text)])
             summary.kind="compaction"
             // The framing is part of the checkpoint from before it is counted.
@@ -295,7 +316,7 @@ extension AgentSession {
                 let paused = costPaused || (error as? AgentError)?.code == Self.costLimitCode || error is CancellationError
                 // A failed attempt is one whose summary request was sent; a
                 // plan that could not be made leaves no record.
-                if !Task.isCancelled, !paused, compactionDispatched, let fingerprint=compactionState["sourceFingerprint"].text {
+                if !Task.isCancelled, !paused, compactionDispatched, !handlesRefusedReasoning(error), let fingerprint=compactionState["sourceFingerprint"].text {
                     failedCompactionFingerprint=fingerprint
                     _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":["fingerprint":JSON(fingerprint)]],flush:true)
                 }

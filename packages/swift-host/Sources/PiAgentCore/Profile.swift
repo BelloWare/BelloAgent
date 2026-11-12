@@ -19,6 +19,31 @@ public struct Profile: Sendable {
     /// The gateway's declared metadata headers and reasoning replay policy,
     /// validated here so no request path has to parse them again.
     let routing: RoutingContract
+    /// Whether a reply's provider-only reasoning is sent back (owner,
+    /// 2026-11-11: "encrypted reasoning should be not ignored").
+    /// - `send`, the default: reasoning a reply was stored with under this
+    ///   rule goes back with later requests, whatever model, alias or
+    ///   connection they go to; a provider that refuses it is the owner's
+    ///   question (`ReasoningRejection`).
+    /// - `never`: the owner's explicit choice. Text and tool calls only,
+    ///   and no signature inside a call id.
+    /// - `pinned`: the fixed-route contract of `routing`, unchanged.
+    /// - `legacy`: text and tool calls as 0.1.137's portable history sent
+    ///   them; only an override turn of a pinned connection is this.
+    /// 0.1.137 knows three `routing.replayPolicy` values and refuses any
+    /// other, so the choice is a field of its own, `reasoningReplay`, which
+    /// that build ignores; without it `portable` and `ask` both mean `send`
+    /// (`portable` was written into every new connection, chosen by nobody).
+    public enum ReasoningReplay: String, Sendable { case send, never, pinned, legacy }
+    public let reasoning: ReasoningReplay
+    /// The replies whose reasoning the owner agreed to leave out after a
+    /// provider refused it (`AgentSession.reasoningWithheld`). Runtime-only,
+    /// like the instruction role: every projection of a chat reads the same set.
+    var reasoningWithheld: Set<String> = []
+    func withholding(_ ids: Set<String>) -> Profile {
+        guard ids != reasoningWithheld else { return self }
+        var copy = self; copy.reasoningWithheld = ids; return copy
+    }
     /// Managed conversations keep the instruction role selected by their
     /// immutable origin. Effort changes affect generation options, not the
     /// beginning of their saved prompt. Runtime-only; no profile/journal field.
@@ -31,7 +56,7 @@ public struct Profile: Sendable {
     }
     /// Generation-budget copies (including summaries) retain runtime context.
     func replacing(_ value: JSON) throws -> Profile {
-        var copy = try Profile(value); copy.fixedInstructionRole = fixedInstructionRole; return copy
+        var copy = try Profile(value); copy.fixedInstructionRole = fixedInstructionRole; copy.reasoningWithheld = reasoningWithheld; return copy
     }
     public init(_ value: JSON) throws {
         guard value.isObject else { throw AgentError("invalid_profile", "Profile must be an object") }
@@ -70,6 +95,9 @@ public struct Profile: Sendable {
         }
         if let level = value["thinkingLevel"].text, !Self.thinkingLevels.contains(level) { throw AgentError("invalid_profile", "Unsupported thinking level") }
         routing = try RoutingContract(value["routing"])
+        let replay = value["reasoningReplay"]
+        guard replay.isNull || ["send", "never", "legacy"].contains(replay.text ?? "") else { throw AgentError("invalid_profile", "Choose whether reasoning is sent back") }
+        reasoning = routing.policy == "pinned" ? .pinned : ReasoningReplay(rawValue: replay.text ?? "send") ?? .send
         raw = value
     }
     public static let thinkingLevels = ["default","off","minimal","low","medium","high","xhigh","max"]
@@ -87,9 +115,10 @@ public struct Profile: Sendable {
         var value = raw; value["outputCap"] = JSON(max(1, cap)); return try replacing(value)
     }
     /// A per-turn override changes the model, thinking and declared capacity.
-    /// A different alias leaves the configured pinned route, so opaque
-    /// reasoning produced by that turn is recorded portably rather than replayed
-    /// into another model later.
+    /// A different alias leaves a configured pinned route, so that turn sends
+    /// text and tool calls as before (`legacy`) and its reply is recorded
+    /// outside the route. A connection that sends reasoning back goes on
+    /// sending it to the other model.
     public func overriding(model: String?, thinkingLevel: String?, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil, input: [String]? = nil) throws -> Profile {
         guard model != nil || thinkingLevel != nil || contextWindow != nil || maxOutputTokens != nil || modelOutputLimit != nil || input != nil else { return self }
         var value = raw
@@ -108,6 +137,7 @@ public struct Profile: Sendable {
             value["modelId"] = JSON(model)
             if model != self.model { value=value.removing(["thinkingLevelMap"]) }
             if model != self.model, !value["routing"].isNull { var routing = value["routing"]; routing["replayPolicy"] = "portable"; value["routing"] = routing.removing(["expectedModel","replayContract"]) }
+            if model != self.model, reasoning == .pinned || reasoning == .legacy { value["reasoningReplay"] = "legacy" }
         }
         if let thinkingLevel {
             guard Self.thinkingLevels.contains(thinkingLevel) else { throw AgentError("invalid_params", "Unsupported thinking level override") }

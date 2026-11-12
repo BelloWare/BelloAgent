@@ -15,6 +15,7 @@ struct JournalReplay: Sendable {
     var pendingRequestLinks: [String: [String]] = [:]
     var recentTaskPresentations: [TaskPresentationRecord] = []
     var compactionState: JSON = .null, contextRecovery: JSON = .null, failedCompactionFingerprint: String?, suppressedCompactionTask: String?, parentInfo: JSON = .null
+    var reasoningWithheld: [String: Set<String>] = [:]
     var presentationOrdinal = 0
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
     /// Shown rows before the loaded ones, when resumed from a checkpoint.
@@ -108,6 +109,7 @@ struct JournalReplayConsumer: Sendable {
         r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
         r.accounting.restoreUsageCoverage(spend:r.spend)
         r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text; r.suppressedCompactionTask=saved["suppressedCompactionTask"].text
+        r.reasoningWithheld=AgentSession.reasoningWithheld(saved["reasoningWithheld"])
         r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
         ordinalMax=saved["presentationOrdinal"].int ?? 0
         r.stateRecord=loaded.state
@@ -203,6 +205,9 @@ struct JournalReplayConsumer: Sendable {
             // Written since 0.1.137 by an automatic failure; a record without it suppresses nothing.
             if let root=item["data"]["taskRootId"].text { r.suppressedCompactionTask=root }
         }
+        else if item["customType"].text == JournalRecordKind.reasoningWithheld, let route=item["data"]["route"].text {
+            r.reasoningWithheld[route,default:[]].formUnion(item["data"]["replies"].list.compactMap(\.text))
+        }
         else if item["customType"].text == JournalRecordKind.contextRecovery { r.contextRecovery=item["data"] }
         else if item["customType"].text == JournalRecordKind.context {
             let byID=Dictionary(r.history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
@@ -227,7 +232,7 @@ struct JournalReplayConsumer: Sendable {
         // A record that sets the model context is where the next open can
         // resume from: the metadata file records what it takes to.
         if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == JournalRecordKind.context {
-            let helper=AgentSession.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,suppressedCompactionTask:r.suppressedCompactionTask,
+            let helper=AgentSession.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,suppressedCompactionTask:r.suppressedCompactionTask,reasoningWithheld:r.reasoningWithheld,
                                                      contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax,subagents:r.subagents,accounting:r.accounting)
             r.captured=AgentSession.checkpoint(sessionID:id,header:header,marker:marker,last:line,at:lineStart,lastID:try identity(item["id"]),
                                                visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
@@ -333,7 +338,9 @@ struct JournalReplayConsumer: Sendable {
         // The suppression too: its failure record lies before this
         // checkpoint, and an open that resumes from here does not read it again.
         let helper = AgentSession.checkpointHelper(spend: r.spend, spendTracked: r.spendTracked,
-            failedCompactionFingerprint: r.failedCompactionFingerprint, suppressedCompactionTask: r.suppressedCompactionTask, contextRecovery: r.contextRecovery,
+            failedCompactionFingerprint: r.failedCompactionFingerprint, suppressedCompactionTask: r.suppressedCompactionTask,
+            // And what a model is no longer sent (0.1.138): the owner's answer is a record before this checkpoint too.
+            reasoningWithheld: r.reasoningWithheld, contextRecovery: r.contextRecovery,
             compactionState: r.compactionState, parentInfo: r.parentInfo, presentationOrdinal: ordinalMax,
             subagents: r.subagents, accounting: r.accounting)
         guard var checkpoint = AgentSession.checkpoint(sessionID: id, header: header, marker: marker,

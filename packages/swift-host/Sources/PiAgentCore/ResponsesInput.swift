@@ -53,12 +53,13 @@ extension ProviderClient {
         // A call whose result never arrived gets pi's synthetic error result
         // before the next assistant or user message.
         var pending: [String] = [], answered = Set<String>()
-        // Whether this model made the calls that are waiting: their outputs go
-        // under the id the calls were sent with (`sentCallID`).
-        var own = true
+        // How the calls that are waiting were named: their outputs, real or
+        // synthetic, go under the very id the calls were sent with (`sentCallID`).
+        var naming = CallNaming.own
+        let signed = takesSignedCallIDs(history, profile: p)
         func settle() {
             for call in pending where !answered.contains(call) {
-                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, own: own)), "output": "No result provided"])
+                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, naming)), "output": "No result provided"])
             }
             pending = []; answered = []
         }
@@ -68,15 +69,16 @@ extension ProviderClient {
             switch message.role {
             case "assistant":
                 settle()
-                let items = try assistantItems(message, profile: p, msgIndex: msgIndex)
+                let replay = try replay(of: message, profile: p, signed: signed)
+                let items = assistantItems(message, replay: replay, msgIndex: msgIndex)
                 let calls = message.content.filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text }
-                if !calls.isEmpty { pending = calls; answered = []; own = sameModel(message, profile: p) }
+                if !calls.isEmpty { pending = calls; answered = []; naming = replay.calls }
                 if items.isEmpty { continue }
                 input += items
             case "toolResult":
                 guard let call = message.toolCallId else { throw AgentError("invalid_context", "Tool result has no call identity") }
                 answered.insert(call)
-                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, own: own)), "output": toolOutput(message, images: images)])
+                input.append(["type": "function_call_output", "call_id": JSON(sentCallID(call, naming)), "output": toolOutput(message, images: images)])
             default:
                 settle()
                 // Ours: a hidden note is a user message of its own, sent just
@@ -162,20 +164,137 @@ extension ProviderClient {
     /// ID (OpenAI: "string too long. Expected a string with maximum length
     /// 64"), so a longer ID goes to it as a short name derived from it, the
     /// same every time. The journal keeps the original either way.
-    static func sentCallID(_ id: String, own: Bool) -> String {
-        own || id.utf8.count <= portableCallIDBytes ? id : "call_" + sha256(Data(id.utf8)).prefix(32)
+    static func sentCallID(_ id: String, own: Bool) -> String { sentCallID(id, own ? .own : .portable) }
+
+    /// How a request names one reply's calls.
+    /// - `own`: byte for byte, to the model that made them.
+    /// - `portable`: a short name for an ID over 64 bytes, to another model.
+    /// - `unsigned`: also a short name for any ID that carries a thought
+    ///   signature (`…__thought__<signature>`, a LiteLLM direct Gemini
+    ///   route), whatever its length and whichever model reads it: for a
+    ///   reply whose reasoning is not sent.
+    enum CallNaming: Sendable { case own, portable, unsigned }
+    /// What LiteLLM puts between a Gemini call's ID and its thought signature.
+    static let thoughtSignatureMark = "__thought__"
+    static func sentCallID(_ id: String, _ naming: CallNaming) -> String {
+        let short = { "call_" + sha256(Data(id.utf8)).prefix(32) }
+        switch naming {
+        case .own: return id
+        case .portable: return id.utf8.count <= portableCallIDBytes ? id : short()
+        case .unsigned: return id.utf8.count <= portableCallIDBytes && !id.contains(thoughtSignatureMark) ? id : short()
+        }
     }
 
-    /// One assistant message's items. A message whose provider items this
-    /// route replays (see `replayItems`) replays them as pi replays a reply of
-    /// the same model: its reasoning items as received, one message item per
-    /// output message, its calls with their fc_ ids. Otherwise it replays from
-    /// its content without provider state: pi's conversion for a reply whose
-    /// state is not replayed, where a reply of another model also turns its
-    /// reasoning summary into text.
+    /// How one reply is sent back.
+    struct ReplyReplay: Sendable {
+        /// The provider items to replay, reasoning first as received; nil
+        /// for a reply rebuilt from its text and tool calls.
+        var items: [JSON]?
+        var calls: CallNaming
+        /// A rebuilt reply of another model carries its reasoning summary as
+        /// text (pi's rule). Not when the reasoning is withheld.
+        var thinkingAsText: Bool
+        /// Whether a call keeps an `fc_` item ID over 64 bytes (its own model only).
+        var longItemIDs: Bool
+        /// A reply cut for agent mail on a pinned route: its items go back
+        /// exactly as the provider sent them, the open message included, so
+        /// the model continues its own unfinished reply.
+        var asReceived = false
+    }
+    /// The one rule for what a request carries of a reply (`Profile.reasoning`).
+    /// `signed`: the request's model is a Gemini one, which takes another
+    /// Gemini model's call IDs as they are (`takesSignedCallIDs`).
+    static func replay(of message: ChatMessage, profile p: Profile, signed: Bool = false) throws -> ReplyReplay {
+        let same = sameModel(message, profile: p)
+        let rebuilt = ReplyReplay(items: nil, calls: same ? .own : .portable, thinkingAsText: !same, longItemIDs: false)
+        // The owner agreed that this model goes on without this reply's
+        // reasoning, whatever the connection's policy (a pinned route's own
+        // state can be refused too): no item, no signature in a call ID, no
+        // `fc_` ID (OpenAI refuses one whose reasoning item is gone), and no
+        // summary as text.
+        if p.reasoningWithheld.contains(message.id) { return ReplyReplay(items: nil, calls: .unsigned, thinkingAsText: false, longItemIDs: false) }
+        switch p.reasoning {
+        case .pinned, .legacy:
+            // 0.1.137's rules, unchanged: a pinned route's own replies with
+            // their state, everything else from its text and calls.
+            guard same, let items = try replayItems(message, profile: p) else { return rebuilt }
+            return ReplyReplay(items: items, calls: .own, thinkingAsText: false, longItemIDs: true,
+                               asReceived: message.nativeMailboxCut?["version"].int == 1 && p.routing.policy == "pinned")
+        case .never:
+            return ReplyReplay(items: nil, calls: .unsigned, thinkingAsText: !same, longItemIDs: false)
+        case .send:
+            // Stored under this rule: its reasoning goes back as received,
+            // also to another model, alias or connection. Most gateways drop
+            // what the target cannot use; one that refuses it is asked about.
+            if message.reasoningReplay == true, let items = message.providerItems {
+                // The 64-byte limit on a call ID is OpenAI's. Another Gemini
+                // model reads the signature LiteLLM keeps in a Gemini call's
+                // ID (3.5 and 3.1 took each other's), so it gets the ID whole;
+                // if it does refuse the signature, that is the owner's question.
+                let whole = same || signed
+                return ReplyReplay(items: items, calls: whole ? .own : .portable, thinkingAsText: false, longItemIDs: whole)
+            }
+            // Any other reply (every one stored before 0.1.138) goes exactly
+            // as that build sent it: from its text and calls, or, where the
+            // connection was not set to portable history, from its own items
+            // when they hold nothing but messages and calls. What 0.1.137
+            // refused to send (`opaque_replay_policy`) goes from text and calls.
+            let plain: Set<String> = ["message", "function_call"]
+            guard same, p.routing.policy != "portable", let items = message.providerItems, items.allSatisfy({ plain.contains($0["type"].text ?? "") }) else { return rebuilt }
+            return ReplyReplay(items: items, calls: .own, thinkingAsText: false, longItemIDs: true)
+        }
+    }
+
+    /// Whether a request of `p` goes to a Gemini model: its name says so, or,
+    /// for an alias such as `flash-lite` that says nothing by its name, the
+    /// gateway reported a Gemini model for that alias's own replies in this
+    /// chat, or one of them made a call whose ID carries a thought signature,
+    /// as only LiteLLM's direct Gemini routes do.
+    static func takesSignedCallIDs(_ history: [ChatMessage], profile p: Profile) -> Bool {
+        if p.model.lowercased().contains("gemini") { return true }
+        return history.contains { reply in
+            guard reply.role == "assistant", reply.providerBinding?["profile"]["model"].text == p.model else { return false }
+            // What the gateway reported for that alias's own replies
+            // (`x-litellm-model-name: gemini/gemini-3.5-flash-lite`), or an id it minted.
+            if reply.providerIdentity?["reportedModels"].list.contains(where: { $0.text?.lowercased().contains("gemini") == true }) == true { return true }
+            return reply.content.contains { $0["type"].text == "toolCall" && $0["id"].text?.contains(thoughtSignatureMark) == true }
+        }
+    }
+
+    /// Whether an input item carries reasoning only its maker can read: an
+    /// encrypted or signed reasoning item, or a call named by an ID with a
+    /// thought signature in it.
+    static func carriesReasoning(_ item: JSON) -> Bool {
+        switch item["type"].text {
+        case "reasoning":
+            return !(item["encrypted_content"].text ?? "").isEmpty || !item["signature"].isNull || item["content"].list.contains { !$0["signature"].isNull }
+        case "function_call": return [item["call_id"].text, item["id"].text].contains { $0?.contains(thoughtSignatureMark) == true }
+        case "function_call_output": return item["call_id"].text?.contains(thoughtSignatureMark) == true
+        default: return false
+        }
+    }
+    /// The replies a request built from `history` sends reasoning of.
+    /// `signedOnly`: only those that name a call by an id with a thought
+    /// signature in it.
+    static func reasoningCarriers(_ history: [ChatMessage], profile p: Profile, signedOnly: Bool = false) throws -> [String] {
+        let projection = try responsesProjection(history, instructions: "", profile: p)
+        func carries(_ item: JSON) -> Bool { carriesReasoning(item) && (!signedOnly || item["type"].text == "function_call") }
+        return history.filter { $0.role == "assistant" }.compactMap { message in
+            projection.ranges[message.id].flatMap { projection.items[$0].contains(where: carries) ? message.id : nil }
+        }
+    }
+
+    /// One assistant message's items. A message whose provider items are
+    /// replayed (see `replay(of:profile:)`) replays them as pi replays a reply
+    /// of the same model: its reasoning items as received, one message item
+    /// per output message, its calls with their fc_ ids. Otherwise it replays
+    /// from its content without provider state: pi's conversion for a reply
+    /// whose state is not replayed, where a reply of another model also turns
+    /// its reasoning summary into text.
     static func assistantItems(_ message: ChatMessage, profile p: Profile, msgIndex: Int) throws -> [JSON] {
-        let replayed = try replayItems(message, profile: p)
-        let sameModel = sameModel(message, profile: p)
+        assistantItems(message, replay: try replay(of: message, profile: p), msgIndex: msgIndex)
+    }
+    static func assistantItems(_ message: ChatMessage, replay: ReplyReplay, msgIndex: Int) -> [JSON] {
         var output: [JSON] = [], textIndex = 0
         func messageID(_ id: String?) -> String {
             let fallback = textIndex == 0 ? "msg_pi_\(msgIndex)" : "msg_pi_\(msgIndex)_\(textIndex)"
@@ -189,8 +308,8 @@ extension ProviderClient {
             if let phase = phase.text, ["commentary", "partial_answer", "final_answer"].contains(phase) { item["phase"] = JSON(phase) }
             return item
         }
-        if sameModel, let items = replayed {
-            if message.nativeMailboxCut?["version"].int == 1, p.routing.policy == "pinned" { return items }
+        if let items = replay.items {
+            if replay.asReceived { return items }
             for item in items {
                 switch item["type"].text {
                 case "reasoning": output.append(item)
@@ -200,8 +319,11 @@ extension ProviderClient {
                 case "function_call":
                     let arguments = message.content.first { $0["type"].text == "toolCall" && $0["id"] == item["call_id"] }?["arguments"]
                         ?? PiProviderRules.parseArguments(item["arguments"].text)
-                    var call: JSON = ["type": "function_call", "call_id": item["call_id"], "name": item["name"], "arguments": JSON(arguments.encoded())]
-                    if let id = item["id"].text, id.hasPrefix("fc_") { call["id"] = JSON(id) }
+                    let name = item["call_id"].text.map { JSON(sentCallID($0, replay.calls)) } ?? item["call_id"]
+                    var call: JSON = ["type": "function_call", "call_id": name, "name": item["name"], "arguments": JSON(arguments.encoded())]
+                    // Another model is not sent an item ID it would refuse for
+                    // its length (`fc_call_…__thought__…`).
+                    if let id = item["id"].text, id.hasPrefix("fc_"), replay.longItemIDs || id.utf8.count <= portableCallIDBytes { call["id"] = JSON(id) }
                     output.append(call)
                 default: continue
                 }
@@ -213,11 +335,11 @@ extension ProviderClient {
             case "thinking":
                 // Reasoning without its replayable item is dropped for the same
                 // model and becomes plain text for another one.
-                guard !sameModel, let thinking = block["thinking"].text, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard replay.thinkingAsText, let thinking = block["thinking"].text, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 output.append(text(thinking, id: nil))
             case "text": output.append(text(block["text"].text ?? "", id: nil))
             case "toolCall":
-                let call = block["id"].text.map { JSON(sentCallID($0, own: sameModel)) } ?? block["id"]
+                let call = block["id"].text.map { JSON(sentCallID($0, replay.calls)) } ?? block["id"]
                 output.append(["type": "function_call", "call_id": call, "name": block["name"], "arguments": JSON(block["arguments"].encoded())])
             default: continue
             }

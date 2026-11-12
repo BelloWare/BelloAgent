@@ -15,7 +15,8 @@ import Combine
         var key = ""
         var headers = ""
         var advanced = "{}"
-        var replayPolicy = "portable"
+        /// A `ReasoningReplayChoice`: send, never or pinned.
+        var replayPolicy = ReasoningReplayChoice.send
         var expectedModel = ""
         var replayContract = ""
         var metadataReference = ""
@@ -30,7 +31,7 @@ import Combine
         static func loaded(_ profile: ProfileRecord, isSaved: Bool) -> Draft {
             let form = SettingsConnectionForm.loaded(profile, isSaved: isSaved), routing = form.routing
             var draft = Draft(profile: profile, baseline: form)
-            draft.advanced = form.advanced; draft.replayPolicy = routing["replayPolicy"]?.string ?? "ask"
+            draft.advanced = form.advanced; draft.replayPolicy = ReasoningReplayChoice.shown(profile, routing: routing)
             draft.expectedModel = routing["expectedModel"]?.string ?? ""; draft.replayContract = routing["replayContract"]?.string ?? ""
             draft.metadataReference = routing["reference"]?.string ?? ""; draft.modelHeader = routing["modelHeader"]?.string ?? ""
             draft.deploymentHeader = routing["deploymentHeader"]?.string ?? ""; draft.groupHeader = routing["groupHeader"]?.string ?? ""
@@ -39,10 +40,11 @@ import Combine
             return draft
         }
         var form: SettingsConnectionForm {
-            var routing: [String: WireValue] = ["replayPolicy": .string(replayPolicy)]
+            var routing: [String: WireValue] = ["replayPolicy": .string(replayPolicy == ReasoningReplayChoice.pinned ? "pinned" : "portable")]
             for (name, value) in [("expectedModel", expectedModel), ("replayContract", replayContract), ("reference", metadataReference), ("modelHeader", modelHeader),
                                   ("deploymentHeader", deploymentHeader), ("groupHeader", groupHeader), ("cacheHeader", cacheHeader)] where !value.isEmpty { routing[name] = .string(value) }
-            return SettingsConnectionForm(profile: profile, advanced: advanced, routing: routing, allowFallbacks: allowFallbacks)
+            var chosen = profile; chosen.reasoningReplay = replayPolicy == ReasoningReplayChoice.never ? "never" : nil
+            return SettingsConnectionForm(profile: chosen, advanced: advanced, routing: routing, allowFallbacks: allowFallbacks)
         }
         /// Anything typed since the load, including a key or headers, which the vault never shows back.
         var edited: Bool { form != baseline || !key.isEmpty || !headers.isEmpty }
