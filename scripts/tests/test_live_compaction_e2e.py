@@ -113,6 +113,17 @@ class FixtureRunTests(unittest.TestCase):
         # The fixture's key stands in for a real one: it is never printed or written.
         self.assertNotIn(harness.FIXTURE["key"], done.stdout + done.stderr + written)
 
+    def test_compact_now_passes_in_the_smallest_window_the_harness_accepts(self):
+        """Live, 2026-11-12, a 32,768-token window: the seed was 77% of the
+        window, and the helper refused the compaction before sending anything
+        (compaction_too_large: no room for the 8,192-token summary)."""
+        done, report, _ = run_fixture("--fixture-window", "32768", "--scenario", "compact-now")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        scenario = report["scenarios"][0]
+        self.assertTrue(scenario["passed"], scenario)
+        self.assertEqual(report["contextWindow"], 32_768)
+        self.assertEqual([row["purpose"] for row in scenario["requests"]], ["compaction", "turn"])
+
     def test_a_summary_capped_at_8192_tokens_fails_every_scenario_that_summarizes(self):
         done, report, _ = run_fixture("--fixture-summary-limit", "8192")
         self.assertEqual(done.returncode, 1, done.stdout[-6000:] + done.stderr[-3000:])
@@ -175,7 +186,7 @@ class SpendingFailureTests(unittest.TestCase):
                 def close(self):
                     self.closed = True
 
-            history = Mock(messages=[])
+            history = Mock(messages=[], tokens=96_000)
             history.grow.return_value = history
             history.tail_tokens.return_value = 200_000
             # Exercise the real scenario loop, polling and report writer. Every
@@ -225,7 +236,7 @@ class SpendingFailureTests(unittest.TestCase):
     def test_unknown_spending_never_passes_a_cost_check_or_prints_a_zero_total(self):
         for recovered in [None, {"state": "idle", "cost": {"spentUSD": 0.0, "unreportedRequests": 1}}]:
             with self.subTest(status=recovered):
-                run = Mock(spent=0.0, unreported=0, dearest=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
+                run = Mock(spent=0.0, unreported=0, dearest=0.0, reserved=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
                 session = Mock()
                 if recovered is None:
                     session.status.side_effect = harness.Failure("fake helper died")
@@ -258,7 +269,7 @@ class SpendingFailureTests(unittest.TestCase):
         for spent, requests in [(0.0, []), (0.30, [{"costUSD": 0.10, "costUnreported": False},
                                                  {"costUSD": 0.20, "costUnreported": False}])]:
             with self.subTest(spent=spent):
-                run = Mock(spent=0.0, unreported=0, dearest=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
+                run = Mock(spent=0.0, unreported=0, dearest=0.0, reserved=0.0, spend_unknown=False, cfg=harness.Config(max_cost=1.0))
                 session = Mock()
                 session.status.return_value = {"state": "idle", "cost": {"spentUSD": spent, "unreportedRequests": 0}}
                 result = harness.Result("fake", "fake")
@@ -277,7 +288,7 @@ class PollingAccountingTests(unittest.TestCase):
 
     def compact(self, cost, *, mode="live", running=True, state="idle"):
         cfg = harness.Config(mode=mode, max_cost=1.0, window=128_000)
-        run = Mock(cfg=cfg, spent=0.0, unreported=0, dearest=0.0, spend_unknown=False)
+        run = Mock(cfg=cfg, spent=0.0, unreported=0, dearest=0.0, reserved=0.0, spend_unknown=False)
         session = harness.Session.__new__(harness.Session)
         session.run, session.cfg, session.id = run, cfg, "fake-session"
         session.opened, session.watched = {}, set()
@@ -351,6 +362,163 @@ class PollingAccountingTests(unittest.TestCase):
         self.assertEqual(len(submits), 1)
         self.assertIsNone(stopped)
         self.assertIsNone(result.cost["runTotalUSD"])
+
+
+class HarnessFaultTests(unittest.TestCase):
+    """Three faults a live run on small models found, 2026-11-12. Fakes only."""
+
+    def run_of(self, max_cost=0.6):
+        run = harness.Run.__new__(harness.Run)
+        run.cfg, run.spent, run.unreported, run.dearest, run.reserved = harness.Config(max_cost=max_cost, mode="live"), 0.0, 0, 0.0, 0.0
+        run.spend_unknown, run.gateway = False, None
+        return run
+
+    def settled(self, run, requests, *, unreported, spent=0.0385, state="paused"):
+        session = Mock()
+        session.status.return_value = {"state": state, "cost": {"spentUSD": spent, "reportedRequests": 39, "unreportedRequests": unreported}}
+        result = harness.Result("mid-run", "fake")
+        result.requests = requests
+        harness.count_spend(run, session, result)
+        return result
+
+    def test_the_compact_now_seed_leaves_the_summary_its_room_in_a_small_window(self):
+        corpus = harness.Corpus()
+        for window in (32_768, 40_000, 64_000, 100_000):
+            with self.subTest(window=window):
+                cfg = harness.Config(window=window, limit=16_384)
+                history = harness.compact_now_history(corpus, cfg)
+                # The helper adds its instructions and tool schemas to the seed, then the
+                # checkpoint instruction and the summary's whole allowance: all inside the window.
+                self.assertLessEqual(history.tokens + harness.PREFIX_ALLOWANCE, cfg.usable)
+                self.assertGreater(history.tokens, window * 0.4, "still a history worth compacting")
+        for window in (128_000, 400_000):
+            with self.subTest(window=window):
+                cfg = harness.Config(window=window, limit=16_384)
+                before = harness.History(corpus, seed=11).grow(tokens=int(window * 0.75))
+                self.assertEqual(harness.compact_now_history(corpus, cfg).tokens, before.tokens, "a window with room is seeded as before")
+
+    def test_a_request_the_script_cut_is_not_a_completed_request_without_a_cost(self):
+        cut = {"attemptId": "a", "purpose": "compaction", "outcome": "cancelled", "modelOutcome": "interrupted",
+               "gateway": {"cost": {"status": "unreported"}}}
+        row = harness.describe(cut, b"{}", b"", None)
+        self.assertTrue(row["interrupted"])
+        self.assertFalse(row["costUnreported"])
+        answered = {"attemptId": "b", "purpose": "turn", "outcome": "completed", "modelOutcome": "completed", "status": 200,
+                    "gateway": {"cost": {"status": "unreported"}}}
+        terminal = b'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+        row = harness.describe(answered, b"{}", terminal, None)
+        self.assertFalse(row["interrupted"])
+        self.assertTrue(row["costUnreported"])
+
+    def test_an_interrupted_request_is_reserved_for_and_the_run_goes_on(self):
+        run = self.run_of()
+        rows = [{"costUSD": 0.0019, "costUnreported": False, "interrupted": False},
+                {"costUSD": None, "costUnreported": False, "interrupted": True}]
+        result = self.settled(run, rows, unreported=1)
+        self.assertEqual(run.unreported, 0, "the request this script cut is not spend the cap cannot see")
+        self.assertFalse(run.spend_unknown)
+        self.assertEqual(result.cost["interruptedWithoutCost"], 1)
+        self.assertEqual(result.cost["completedWithoutCost"], 0)
+        # It may still have been billed: the dearest request so far is set aside for it.
+        self.assertAlmostEqual(run.reserved, 0.0019)
+        self.assertAlmostEqual(run.budget(), 0.6 - 0.0385 - 0.0019 - 0.0019)
+        harness.cost_check(result, run)
+        self.assertTrue(result.checks[-1]["passed"], result.checks[-1])
+        self.assertIn("interrupted", result.checks[-1]["detail"])
+
+    def test_a_completed_request_without_a_cost_still_ends_the_run(self):
+        for rows, unreported in [([{"costUSD": None, "costUnreported": True, "interrupted": False}], 1),
+                                 # One more than the script cut: a completed request went unpriced.
+                                 ([{"costUSD": None, "costUnreported": False, "interrupted": True}], 2),
+                                 # The helper keeps its last 64 requests: a row may be gone, its count is not.
+                                 ([], 1)]:
+            with self.subTest(rows=rows, unreported=unreported):
+                run = self.run_of()
+                result = self.settled(run, rows, unreported=unreported)
+                self.assertEqual(run.unreported, 1)
+                self.assertEqual(run.budget(), 0)
+                harness.cost_check(result, run)
+                self.assertFalse(result.checks[-1]["passed"])
+
+    def test_the_run_goes_on_to_the_next_scenario_after_it_stops_a_loop(self):
+        with tempfile.TemporaryDirectory(prefix="pi-interrupt-fake-") as folder:
+            cfg = harness.Config(mode="live", out=pathlib.Path(folder), api_key="fake-key", helper="fake-helper", base_url="https://unused.invalid",
+                                 model="fake-model", window=128_000, limit=128_000, window_source="fake", limit_source="fake", thinking="high",
+                                 max_cost=1.0, summary_limit=None, stamp="fake", keep=False, scenarios=["mid-run", "too-large"])
+            sessions = []
+
+            class FakeSession:
+                wait = harness.Session.wait
+
+                def __init__(self, run, name, history, workspace=None):
+                    self.run, self.cfg, self.name, self.markers = run, run.cfg, name, {}
+                    self.opened, self.path, self.id, self.turn = {"context": {"tokens": 60_000}}, None, "fake-session", None
+                    self.watched, self.stopped, self.helper = set(), False, Mock()
+                    self.helper.command.side_effect = self.command
+                    sessions.append(self)
+
+                def command(self, method, *args, **kwargs):
+                    self.stopped = self.stopped or method == "turn.stop"
+                    return {}
+
+                def submit(self, text):
+                    return "fake-turn"
+
+                def attempts(self):
+                    priced = {"cost": {"status": "reported", "usd": 0.002}}
+                    done = [{"attemptId": f"s{index}", "purpose": "compaction", "outcome": "completed", "modelOutcome": "completed", "status": 200,
+                             "gateway": priced} for index in range(10)]
+                    last = {"attemptId": "s10", "purpose": "compaction", "outcome": "cancelled" if self.stopped else "running", "modelOutcome": "interrupted"}
+                    return done + [last] if self.name == "mid-run" else []
+
+                def listed(self):
+                    return self.attempts()
+
+                def status(self):
+                    if self.name != "mid-run":
+                        return {"state": "error", "compaction": {"errorCode": "compaction_too_large"},
+                                "cost": {"spentUSD": 0.0, "reportedRequests": 0, "unreportedRequests": 0}}
+                    return {"state": "paused" if self.stopped else "running",
+                            "cost": {"spentUSD": 0.02, "reportedRequests": 10, "unreportedRequests": 1 if self.stopped else 0}}
+
+                def collect(self):
+                    return [dict(harness.describe(attempt, b"{}", b"", None), index=index) for index, attempt in enumerate(self.attempts(), 1)]
+
+                def close(self):
+                    pass
+
+            history = Mock(messages=[], tokens=96_000)
+            history.grow.return_value = history
+            history.tail_tokens.return_value = 200_000
+            output = io.StringIO()
+            with patch.object(harness, "load_config", return_value=cfg), patch.object(harness, "Corpus"), \
+                 patch.object(harness, "History", return_value=history), patch.object(harness, "Session", FakeSession), \
+                 patch.object(harness, "journal", return_value=([], [], [])), \
+                 patch.object(harness, "Helper", side_effect=AssertionError("no real helper")), \
+                 patch("socket.socket", side_effect=AssertionError("no network")), \
+                 patch.object(harness.time, "sleep"), contextlib.redirect_stdout(output):
+                code = harness.main([])
+            report = json.loads((cfg.out / "report.json").read_text())
+            self.assertEqual(code, 1, "the looping scenario still fails")
+            self.assertEqual([session.name for session in sessions], ["mid-run", "too-large"], "the next scenario ran")
+            self.assertNotIn("Stopping:", output.getvalue())
+            first, second = report["scenarios"]
+            self.assertFalse(first["passed"])
+            self.assertEqual(first["cost"]["interruptedWithoutCost"], 1)
+            self.assertAlmostEqual(report["costUSD"], 0.02)
+            self.assertTrue(second["passed"], second)
+
+    def test_the_mid_run_task_does_not_forbid_what_a_model_always_passes(self):
+        """Live: a model that always passes offset and limit broke the ban,
+        and the summarizer then ruled every read invalid: "restart at part-01"."""
+        prompt = harness.task_prompt()
+        self.assertTrue(prompt.startswith(harness.TASK_TAG))
+        for word in ("offset", "limit", "do not pass", "in full"):
+            self.assertNotIn(word, prompt.lower())
+        paths = [f"evidence/part-{index:02d}.txt" for index in range(1, harness.EVIDENCE_FILES + 1)]
+        self.assertEqual(reasoning_gateway.EVIDENCE.findall(prompt), paths, "the ten files, in order")
+        self.assertIn('"E2E-MARKER part-NN: WORD"', prompt)
+        self.assertIn('"part-NN: WORD"', prompt)
 
 
 def summary_request(limit, effort="high"):
