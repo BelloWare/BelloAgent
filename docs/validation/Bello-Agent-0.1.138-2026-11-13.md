@@ -1,6 +1,6 @@
 # Bello Agent 0.1.138 — reasoning sent back, a kept model list, and requests over the window
 
-Status: **verified, signed and notarized 2026-11-13; not published yet (the lead publishes).** Marketing version 0.1.138, build 142. Previous public release: 0.1.137/build 141.
+Status: **released and verified 2026-11-13.** Marketing version 0.1.138, build 142. Previous public release: 0.1.137/build 141.
 
 ## Owner request
 
@@ -121,10 +121,8 @@ Toolchain: macOS 14.8 arm64, Xcode 16.1, Swift 6.0.2, XcodeGen 2.44.1. Logs are 
 - Built from `0aa84244` with `scripts/release.sh` run from the worktree, `NOTARY_KEY_PATH` naming the key file in full, every other value its default (`hotfix138-release.log`). What follows that commit is this record, `ReasoningContinueIntegrationTests` with its fixture and script test, and the project file that lists the test: no product source, so the artifacts stand. As for 0.1.137, the tag belongs on the record's last commit.
 - `BelloAgent-0.1.138.dmg`, sha256 `d1ec35ae89028d0d260cf91e222867b4f6212746b48642283f74b490ee783044`, 17,406,897 bytes; Developer ID signed and notarized (app submission `5d32352c-deef-4632-adc0-59ca6b738ea5`, DMG submission `6020b3b7-5ea2-4656-ac7e-6c983c2b24ac`, both Accepted), stapled. In `~/Library/Caches/BelloSwiftWork/a138-reasoning-build/releases/0.1.138`, with the app, both dSYMs and both feeds.
 - `validate-release.py bello_agent.appcast.xml BelloAgent-0.1.138.dmg "Bello Agent.app" --previous-build 141`: passed (0.1.138 build 142, Ed25519 signature verified, 17,406,897 bytes; `hotfix138-validate-release.log`). The Bello Agent and legacy Pi App staging feeds are byte-identical.
-- **Not published, not tagged, `main` not moved**: the lead publishes. To publish and verify, from this worktree at the record's commit:
-
-  ```sh
-  PI_BUILD_ROOT=~/Library/Caches/BelloSwiftWork/a138-reasoning-build scripts/publish-release.sh 0.1.138
-  python3 scripts/verify-published.py ~/Library/Caches/BelloSwiftWork/a138-reasoning-build/releases/0.1.138 <an empty downloads folder>
-  ```
+- Tag `v0.1.138` on `5aacf354` ("Press the refusal notice's button in the built app, the whole way to the gateway"), the commit publication ran from: it holds the version, the notes and this record as validated. The artifacts were built from `0aa84244`; the two differ by tests, a fixture and this record. `main` moves by fast-forward to the commit that records the publication.
+- **Publication decision** (lead): the serial lane's one failure is the one that fails identically on `v0.1.135` to `v0.1.137`; the dead button the first gate found was fixed and then pressed in the built app the whole way to a refusing gateway; the live compaction test and the live checks ran on an OpenRouter key through a local LiteLLM, not on the owner's own gateway.
+- `scripts/publish-release.sh 0.1.138` ran from the worktree at `5aacf354` with `BELLOWARE_SITE_ROOT` naming the site checkout, exit 0. Website commit `cc00642` ("Publish Bello Agent 0.1.138 update", belloware.com `main`; previous `569ddab`).
+- `verify-published.py <build>/releases/0.1.138 <build>/downloads --download-url-prefix https://belloware.com/assets/`: the public DMG matches (sha256 `d1ec35ae89028d0d260cf91e222867b4f6212746b48642283f74b490ee783044`, Ed25519 signature verified, 17,406,897 bytes), and the Bello Agent and legacy Pi App feeds are byte-identical. It passed on the seventh try at 30-second intervals, once the site had deployed (`a138-reasoning-build/verify-published.log`).
 - Installation and Sparkle update rehearsals were not run, under the standing owner policy.
