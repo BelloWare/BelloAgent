@@ -1137,7 +1137,15 @@ signed app's bundled `bello-agent.models.json` is the sole source, also for
 legacy decoded connections. It is copied directly from the reviewed repository
 catalog and parsed by the same endpoint parser. Loading the bundled list never
 reads credentials or contacts `/v1/models`; a missing/corrupt bundle resource
-surfaces an error. Source changes invalidate cached lists. Optional flat
+surfaces an error. Source changes invalidate cached lists. A list in hand is
+used (owner, 2026-11-12: "Do both for catalog loading"): a custom catalog older
+than five minutes is read again behind its callers, and a saved connection's
+last good custom catalog is kept in `ModelCatalogs/` under the app's state
+folder (models and a digest of the source only: no address, key or header), so
+a launch has it at once and a fresh read replaces it behind; only Refresh, or a
+connection with no list at all, waits for the catalog's source. A kept list
+belongs to one connection and one source and goes with a deleted connection
+(`docs/Model-Catalog.md`, "The list in hand"). Optional flat
 `catalogSources` references in the vault separate catalog authority from request
 profile snapshots. Every list consumer, descriptor/effort lookup and mini-model
 recommendation resolves this authority; requests still use the original profile.

@@ -70,8 +70,8 @@ it uses (its own choice, or its connection's model) lists `image` in `input`,
 or when its connection lists it under Settings → Connections → Model
 capabilities (`"input": ["text", "image"]`). The catalog is read live: a
 catalog updated to list `image` applies to existing chats once the app reads
-it again (a custom catalog when a model picker next needs it after five
-minutes, or on Refresh; the bundled one with the next release), without
+it again (a custom catalog when something next needs it after five
+minutes, read behind the list in hand, or on Refresh; the bundled one with the next release), without
 choosing the model again. When only the catalog says so, each turn tells the
 helper, which then accepts the images and sends them, and pi's `read` tool
 returns image files to the model as images. Pickers mark such models
@@ -148,10 +148,66 @@ keeps the last list it loaded (if any) and lets you type an alias; a malformed
 catalog URL or path is reported the same way. A failed load is not retried for
 thirty seconds unless you choose Refresh.
 
+## The list in hand
+
+Owner, 2026-11-12: "Do both for catalog loading."
+
+**Kept on disk.** A saved connection's last good custom catalog (an address or
+a local file) is kept in the app's state folder, under `ModelCatalogs/`, one
+file per connection. A launch therefore has the models, their limits and the
+picker at once, also when the catalog's address is slow or cannot be reached;
+the catalog is read as before and a successful read replaces the kept list,
+in memory, in an open picker and on disk. A read that fails leaves the kept
+list in use and is reported where a failed refresh always was (the picker's
+"Refresh failed · showing the last list" with the reason).
+
+- The file holds the parsed models and a digest of the source they were read
+  from: the API, the gateway and the catalog's address or path. It never holds
+  the address itself (a catalog URL can carry a token in its query), a key or
+  a header, and its name is a digest of the connection's id. Permissions are
+  owner-only.
+- A kept list belongs to one connection and one source. Another catalog
+  address, another gateway or another connection never shows it: such a
+  connection starts with nothing and waits for its own first read, and that
+  read replaces the file. A connection that is saved again without changing
+  its source keeps its list while the new revision is read.
+- Deleting a connection deletes its kept list, and a list kept for a
+  connection that is no longer saved is dropped when the configuration loads.
+  A connection still being added or edited in Settings keeps nothing.
+- A file that is damaged, too large, of another version or not a list the
+  catalog format allows is ignored. The bundled catalog is never kept: it is
+  in the app.
+- Earlier versions of the app do not know the folder and leave it alone;
+  removing it only means the next launch waits for the first read again.
+
+**Refreshed behind.** A custom catalog is still read again once it is five
+minutes old, but nothing waits for that read while a list is in hand: the
+picker, the model pill, titles, briefs, Ask, the context preview and a turn's
+sub-agent grants use the list they have, and the fresh one takes its place
+when it arrives. One read runs behind however many ask meanwhile. Only two
+callers wait for the catalog's source: **Refresh**, which is the reader asking
+for the fresh list, and a connection with no list at all (its first read with
+nothing kept, or a failure that left nothing).
+
+- A failed read behind keeps the list, shows the error in the picker, is not
+  tried again for thirty seconds, and is then tried again behind the list.
+- An open picker takes the fresh list in place: it is not closed, its search
+  and scroll position stay, and the chosen model stays chosen. A chosen model
+  the fresh list no longer has reads as it always has ("Current selection … is
+  not listed by this source. It remains selected until you choose another
+  model."); there is no new prompt.
+- A turn takes its values when it is sent, so a refresh that lands while it
+  runs changes nothing in it. A chat keeps the limits it stored when its model
+  was chosen, also when the fresh catalog says the context window shrank;
+  choosing the model again adopts the new limits, as before. What is read from
+  the catalog for each turn (the sub-agent grants and whether the model takes
+  images) follows the fresh list from the next turn.
+
 Remote and local catalogs are cached for five minutes per connection and loaded
 lazily when that session's picker appears, without requiring a hover. Saved connection changes
 reload its picker; other connections are not prefetched. Opening the live native
-picker checks that cache again, including keyboard opening after five minutes.
+picker checks that cache again, including keyboard opening after five minutes;
+an expired list stays on screen while it is read again (see "The list in hand").
 Explicit Refresh reloads saved configuration and the connection’s catalog binding,
 then forces a fetch with HTTP cache revalidation or rereads the local file. Editing
 a local file takes effect on Refresh or the next load after the cache expires.
