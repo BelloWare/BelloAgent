@@ -61,7 +61,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             incomplete = False
             if summary:
                 assert history[-1]['role'] == 'user'
-                prompt = texts[-1]
+                # A second ask (0.1.138) appends one line after the instruction.
+                prompt = texts[-2] if len(texts) > 1 and texts[-1].startswith('The reply to the request above was not a checkpoint') else texts[-1]
                 assert prompt.startswith('Create a concise continuation checkpoint')
                 assert 'Boundary:' in prompt
                 assert body['truncation'] == 'disabled'

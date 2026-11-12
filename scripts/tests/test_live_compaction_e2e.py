@@ -124,6 +124,18 @@ class FixtureRunTests(unittest.TestCase):
         self.assertEqual(report["contextWindow"], 32_768)
         self.assertEqual([row["purpose"] for row in scenario["requests"]], ["compaction", "turn"])
 
+    def test_a_small_window_with_reasoning_sent_back_compacts_before_it_is_over_the_window(self):
+        """Live, 2026-11-12, a 32,768-token window with reasoning sent back
+        and 7,200-token files: no plan could be made, ten times, and the turn
+        grew to 80,982 tokens. The helper now keeps what must stay with a
+        checkpoint before a request goes out over the window."""
+        done, report, _ = run_fixture("--fixture-window", "32768", "--fixture-reasoning", "12000", "--evidence-tokens", "7200", "--scenario", "mid-run")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        scenario = report["scenarios"][0]
+        turns = [row for row in scenario["requests"] if row["purpose"] == "turn"]
+        self.assertTrue(scenario["compactions"] and scenario["checkpoints"])
+        self.assertLess(max(row["inputTokens"] for row in turns), 32_768, "no turn request grows past the window")
+
     def test_a_summary_capped_at_8192_tokens_fails_every_scenario_that_summarizes(self):
         done, report, _ = run_fixture("--fixture-summary-limit", "8192")
         self.assertEqual(done.returncode, 1, done.stdout[-6000:] + done.stderr[-3000:])
@@ -530,6 +542,73 @@ class HarnessFaultTests(unittest.TestCase):
         self.assertEqual(reasoning_gateway.EVIDENCE.findall(prompt), paths, "the ten files, in order")
         self.assertIn('"E2E-MARKER part-NN: WORD"', prompt)
         self.assertIn('"part-NN: WORD"', prompt)
+
+
+class SecondRunFaultTests(unittest.TestCase):
+    """Faults the second live run found, 2026-11-12. Fakes only."""
+
+    def row(self, index, operation, *, stop="completed", again=False, sha="a"):
+        return {"index": index, "purpose": "compaction", "operation": operation, "stopReason": stop, "modelOutcome": stop, "kind": "continuation",
+                "effectiveMaxOutputTokens": 16_384, "outputTokens": 900, "reasoningTokens": 500, "answered": True, "inputSHA256": sha, "askedAgain": again}
+
+    def checked(self, operations, requests, checkpoints=1):
+        cfg = harness.Config(mode="live", window=128_000, limit=128_000)
+        result = harness.Result("mid-run", "fake")
+        result.requests, result.operations = requests, operations
+        result.checkpoints = [{"id": f"cp{index}", "phase": "completed", "reason": "threshold", "before": {"requestTokens": 90_000},
+                               "after": {"requestTokens": 30_000}} for index in range(checkpoints)]
+        status = {"state": "idle", "latestSuccessfulCompaction": {"id": f"cp{checkpoints - 1}"}}
+        harness.common_checks(result, status, None, 10, Mock(cfg=cfg))
+        return {check["name"]: check for check in result.checks}
+
+    def test_a_plan_that_sent_nothing_is_neither_a_failed_compaction_nor_a_loop(self):
+        """Live: ten plans could not be made and sent nothing, and the check
+        said "compaction was tried 9 more times after one failed"."""
+        unsent = [{"operation": f"plan{index}", "terminal": "failed", "detail": "Compaction · No useful checkpoint can be planned"} for index in range(3)]
+        done = {"operation": "op", "terminal": "completed", "detail": "Compaction · Checkpoint durably adopted"}
+        checks = self.checked(unsent[:2] + [done] + unsent[2:], [self.row(1, "op")])
+        self.assertTrue(checks["no loop"]["passed"], checks["no loop"])
+        self.assertIn("3 plans that sent nothing are not counted", checks["no loop"]["detail"])
+        self.assertTrue(checks["compaction completed and its summary adopted"]["passed"])
+
+    def test_a_summary_request_that_failed_and_was_followed_by_another_is_still_a_loop(self):
+        failed = {"operation": "bad", "terminal": "failed", "detail": "Compaction · Summary generation hit the model's output limit"}
+        done = {"operation": "op", "terminal": "completed", "detail": "Compaction · Checkpoint durably adopted"}
+        checks = self.checked([failed, done], [self.row(1, "bad", stop="max_output_tokens", sha="a"), self.row(2, "op", sha="b")])
+        self.assertFalse(checks["no loop"]["passed"])
+        self.assertFalse(checks["compaction completed and its summary adopted"]["passed"])
+
+    def test_a_summary_asked_for_once_more_is_one_request_of_its_compaction(self):
+        instruction = "Create a concise continuation checkpoint for this conversation.\nBoundary: {}"
+        def body(*texts):
+            return json.dumps({"input": [{"role": "user", "content": [{"type": "input_text", "text": "Task"}]}]
+                               + [{"role": "user", "content": [{"type": "input_text", "text": text}]} for text in texts]}).encode()
+        attempt = {"attemptId": "a", "purpose": "compaction", "outcome": "completed", "modelOutcome": "completed", "status": 200,
+                   "operation": {"operationId": "op"}, "gateway": {"cost": {"status": "reported", "usd": 0.01}}}
+        first = harness.describe(attempt, body(instruction), b"", None)
+        second = harness.describe(attempt, body(instruction, harness.ANSWER_AS_TEXT), b"", None)
+        self.assertFalse(first["askedAgain"]); self.assertTrue(second["askedAgain"])
+        self.assertEqual(second["kind"], "continuation")
+        self.assertEqual(second["inputSHA256"], first["inputSHA256"], "the same request, and one line")
+        done = {"operation": "op", "terminal": "completed", "detail": "Compaction · Checkpoint durably adopted"}
+        rows = [dict(self.row(1, "op", sha=first["inputSHA256"])), dict(self.row(2, "op", again=True, sha=second["inputSHA256"]))]
+        checks = self.checked([done], rows)
+        self.assertTrue(checks["one summary request per compaction"]["passed"], checks["one summary request per compaction"])
+        self.assertTrue(checks["no loop"]["passed"], checks["no loop"])
+
+    def test_the_evidence_files_scale_with_the_window(self):
+        self.assertEqual(harness.evidence_tokens(harness.Config(window=128_000)), 7_200)
+        self.assertEqual(harness.evidence_tokens(harness.Config(window=400_000)), 7_200)
+        small = harness.evidence_tokens(harness.Config(window=32_768))
+        self.assertEqual(small, 1_843)
+        self.assertEqual(harness.evidence_tokens(harness.Config(window=32_768, evidence_tokens=7_200)), 7_200)
+        with tempfile.TemporaryDirectory(prefix="pi-evidence-") as folder:
+            markers = harness.evidence(harness.Corpus(), pathlib.Path(folder), seed=29, tokens=small)
+            sizes = [path.stat().st_size for path in sorted(pathlib.Path(folder, "evidence").iterdir())]
+            self.assertEqual(len(markers), 10)
+            # An excerpt may run the file up to 1,500 bytes past its least size, as at 7,200 tokens.
+            self.assertTrue(all(small * 15 // 4 <= size <= small * 15 // 4 + 1_700 for size in sizes), sizes)
+            self.assertLess(max(sizes) / 4 / 32_768, 0.08, "a file is a small share of the window, not 30% of its input")
 
 
 def summary_request(limit, effort="high"):

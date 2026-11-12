@@ -13,9 +13,10 @@ import XCTest
 // task that it is over the window; a provider's refusal takes the overflow
 // path; and a reply cut at the output limit ends its task as stopped early.
 
-/// Records each turn request's body and the profile it was dispatched with,
-/// and answers from a script. The request numbered `hold` (from 0) waits for
-/// `release()`, so a test can stop the run while it is in flight.
+/// Records each request's body and the profile it was dispatched with. A
+/// turn request is answered from a script, a summary request with "SUMMARY".
+/// The turn request numbered `hold` (from 0) waits for `release()`, so a test
+/// can stop the run while it is in flight.
 private actor OverClient: ModelClient {
     enum Step { case reply(ModelReply), fail(AgentError) }
     var script: [Step]
@@ -25,8 +26,10 @@ private actor OverClient: ModelClient {
     func release() { hold = nil }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         let body = try ProviderClient.requestBody(profile: profile, messages: messages, instructions: instructions, tools: tools, sessionID: sessionID, compaction: purpose == "compaction")
-        let index = sent.count
+        let index = turns
         sent.append((purpose, body, profile.wireOutputLimit))
+        if purpose == "compaction" { return answer("SUMMARY") }
+        turns += 1
         while hold == index { try await Task.sleep(for: .milliseconds(5)) }
         guard !script.isEmpty else { throw AgentError("fixture_exhausted", "Unexpected model request") }
         switch script.removeFirst() {
@@ -40,6 +43,7 @@ private actor OverClient: ModelClient {
         }
     }
     var count: Int { sent.count }
+    var turns = 0
 }
 /// Every read returns `chars` characters that name the call.
 private actor LargeReads: ToolExecuting {
@@ -120,28 +124,35 @@ final class OverWindowTests: HelperTestCase {
         await s.close()
     }
 
-    /// Three more rounds over the window, a Stop while one is in flight and a
-    /// Resume: the task has said it once. The next task says it again.
+    /// The oversize request is stopped in flight and resumed: the task has
+    /// said it once. Once its batch is answered there is something to
+    /// summarize, and the next request is relieved by a checkpoint instead.
+    /// The next task's own ten results are over the window with nothing left
+    /// to summarize, and it says so for itself.
     func testTheNoticeIsOncePerTaskAlsoAfterStopAndResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = OverClient([.reply(reads(0, 10)), .reply(reads(1, 1)), .reply(reads(2, 1)), .reply(answer("First done.")), .reply(answer("Second done."))], hold: 2)
+        let client = OverClient([.reply(reads(0, 10)), .reply(reads(1, 1)), .reply(reads(2, 1)), .reply(answer("First done.")),
+                                 .reply(reads(3, 10)), .reply(answer("Second done."))], hold: 1)
         let s = try session(root, client)
         _ = try await s.keep(whenFinished: false)
         _ = try await s.submit(Submission(commandID: "c", turnID: "task", text: task), steer: false)
-        try await eventually(timeout: .seconds(30)) { await client.count == 3 }
+        try await eventually(timeout: .seconds(30)) { await client.turns == 2 }
         var rows = await notices(s)
-        XCTAssertEqual(rows.count, 1, "Two requests over the window so far, one notice")
+        XCTAssertEqual(rows.count, 1, "The request with the ten results is over the window: said")
         await s.stop(); _ = try await settled(s)
         await client.release()
         _ = try await s.continueRun(commandID: "resume")
         var state = try await settled(s)
         XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
         rows = await notices(s)
-        XCTAssertEqual(rows.count, 1, "The resumed task does not say it again")
+        var purposes = await client.sent.map(\.purpose)
+        XCTAssertEqual(rows.count, 1, "The resumed task sends that request again and does not say it again")
+        XCTAssertEqual(purposes, ["turn", "turn", "turn", "compaction", "turn", "turn"], "With the batch answered, the next request is relieved by a checkpoint")
         _ = try await s.submit(Submission(commandID: "d", turnID: "next", text: "And now?"), steer: false)
-        state = try await settled(s); rows = await notices(s)
+        state = try await settled(s); rows = await notices(s); purposes = await client.sent.map(\.purpose)
         XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
-        XCTAssertEqual(rows.count, 2, "A new task whose first request is over the window says so for itself")
+        XCTAssertEqual(Array(purposes.suffix(2)), ["turn", "turn"], "\(purposes)")
+        XCTAssertEqual(rows.count, 2, "The new task's own ten results are over the window with nothing left to summarize")
         XCTAssertEqual(Set(rows.compactMap(\.taskRootID)), ["task", "next"])
         await s.close()
     }

@@ -119,14 +119,19 @@ final class CompactionGatewayTests: HelperTestCase {
             XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertTrue(calls.isEmpty)
             XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent("counter.txt").path))
             let records=try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }.filter { $0["session"].text==id }
-            XCTAssertEqual(records.count,1,"Tool-calling summaries are not retried")
+            // 0.1.138: asked once more, the same request and one line; the second tool call is the failure.
+            XCTAssertEqual(records.count,2,"A tool-calling summary is asked for once more, and no more")
+            let again=try JSON.parse(XCTUnwrap(Data(base64Encoded:try XCTUnwrap(records.last?["request"].text))))
             let sent=try JSON.parse(XCTUnwrap(Data(base64Encoded:try XCTUnwrap(records.first?["request"].text))))
             let normal=try ProviderClient.requestBody(profile:profile,messages:seed,instructions:AgentSession.requestInstructions(snapshot.prompt),tools:definitions,sessionID:id)
             XCTAssertEqual(Array(sent["input"].list.dropLast()),normal["input"].list)
             for key in ["tools","reasoning","include","prompt_cache_key","store","model"] { XCTAssertEqual(sent[key],normal[key],key) }
             XCTAssertEqual(sent["truncation"].text,"disabled")
+            XCTAssertEqual(Array(again["input"].list.dropLast()),sent["input"].list,"The second request is the first, item for item, and one line")
+            XCTAssertEqual(again["input"].list.last?["content"].list.first?["text"].text,AgentSession.answerAsText)
+            XCTAssertEqual(again.removing(["input"]),sent.removing(["input"]))
             let attempts=try await traces.command("debug.list",session:id,params:[:])["attempts"].list
-            XCTAssertEqual(attempts.count,1);XCTAssertEqual(attempts.first?["purpose"].text,"compaction")
+            XCTAssertEqual(attempts.count,2);XCTAssertTrue(attempts.allSatisfy { $0["purpose"].text == "compaction" })
             await s.close()
         }
     }

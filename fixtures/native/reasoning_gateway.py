@@ -105,8 +105,12 @@ def encoded(value):
 class ReasoningGateway:
     """One loopback server. `records` lists every request it answered."""
 
-    def __init__(self, *, api_key, model, window, summary_limit=None):
+    def __init__(self, *, api_key, model, window, summary_limit=None, reasoning_chars=0):
         self.api_key, self.model, self.window, self.summary_limit = api_key, model, window, summary_limit
+        # With `reasoning_chars`, a turn's reasoning item carries that much
+        # opaque content and the gateway takes reasoning items back, as a
+        # connection that sends reasoning back (the default since 0.1.138) does.
+        self.reasoning_chars = reasoning_chars
         self.records, self.lock, self.prefixes = [], threading.Lock(), {}
         gateway = self
 
@@ -144,7 +148,7 @@ class ReasoningGateway:
         try:
             body = json.loads(raw)
             semantic = contract.validate_request("POST", handler.path, dict(handler.headers), body, api_key=self.api_key, model=self.model,
-                                                 native_items="portable", historical_tool_schemas=HISTORICAL_TOOLS)
+                                                 native_items=None if self.reasoning_chars else "portable", historical_tool_schemas=HISTORICAL_TOOLS)
         except (ValueError, contract.FixtureContractError) as error:
             # The contract compares the key in memory and never names it.
             return self.refuse(handler, record, 422, {"error": {"type": "fixture_contract", "message": str(error)}})
@@ -158,7 +162,7 @@ class ReasoningGateway:
                                "message": f"This model's maximum context length is {self.window} tokens. Your input has {input_tokens} tokens."}})
         reasoning = SUMMARY_REASONING.get(effort, SUMMARY_REASONING["medium"])
         if summary:
-            prompt = semantic["user_texts"][-1]
+            prompt = contract.summary_prompt(semantic["user_texts"])
             text, call = self.summarize(prompt, input_tokens, body=body), None
             record["summary_kind"] = parse_summary_prompt(prompt)[0]
         else:
@@ -316,7 +320,7 @@ class ReasoningGateway:
     def stream(self, handler, record, usage, text, call, reasoning, complete, limit):
         ident = uuid.uuid4().hex[:24]
         reasoning_item = {"type": "reasoning", "id": "rs_" + ident, "summary": [{"type": "summary_text", "text": "Reviewing the input before answering."}],
-                          "encrypted_content": "fixture-opaque-" + ident}
+                          "encrypted_content": ("fixture-opaque-" + ident).ljust(0 if record.get("purpose") == "summary" else self.reasoning_chars, "A")}
         events = [{"type": "response.created", "response": {"id": "resp_" + ident, "model": self.model, "status": "in_progress", "output": []}}]
         output = []
         if reasoning:

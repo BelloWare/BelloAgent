@@ -279,7 +279,7 @@ extension AgentSession {
                     // After "Continue without earlier reasoning" the context is
                     // another one: whether it still needs a summary is asked again.
                     let recheck=recheckCompactionOnRetry; recheckCompactionOnRetry=false
-                    if !resumingFailedRequest || recheck, try await compactAtThreshold(prepared.count.requestTokens,instructions:prepared.instructions) {
+                    if !resumingFailedRequest || recheck, try await compactAtThreshold(prepared.count,instructions:prepared.instructions) {
                         if !drained, try await drainSteering() { overflowRecoveryAttempted=false }
                         prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }

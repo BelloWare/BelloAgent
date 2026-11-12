@@ -13,7 +13,7 @@ seeded tool-heavy sessions built from this repository's own text:
                 where that much would leave the summary no room: roughly, in
                 a window under 100,000 tokens), then a turn that must start
                 from the summary.
-  mid-run       One turn told to read ten large files in a temp workspace
+  mid-run       One turn told to read ten files (sized to the window) in a temp workspace
                 with the real read tool: the session starts just under
                 the task-start threshold, the working threshold is crossed
                 between rounds, the helper compacts mid-run in one request
@@ -114,6 +114,7 @@ MINIMUM_WINDOW = 32_768
 FIXTURE = {"model": "fixture-reasoner", "window": 128_000, "limit": 128_000, "thinking": "high", "max_cost": 5.0,
            "key": "fixture-live-e2e-key-" + "0" * 12}
 TASK_TAG, SUMMARY_PREFIX = reasoning_gateway.TASK_TAG, reasoning_gateway.SUMMARY_PREFIX
+ANSWER_AS_TEXT = reasoning_gateway.contract.ANSWER_AS_TEXT
 EVIDENCE_FILES = 10
 FOLLOW_UP = ("E2E follow-up. Do not use any tools. In at most three sentences, say what this session has been "
              "working on, according to the conversation so far.")
@@ -179,7 +180,7 @@ def load_config(args):
         raise Failure(f"No release helper at {helper}. Build it with scripts/build-bundle.py (or pass --helper).")
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     common = {"helper": helper.resolve(), "out": build_root / "live-e2e" / stamp, "stamp": stamp,
-              "scenarios": args.scenario or list(SCENARIOS), "keep": args.keep}
+              "scenarios": args.scenario or list(SCENARIOS), "keep": args.keep, "evidence_tokens": getattr(args, "evidence_tokens", None)}
     if args.fixture_summary_limit is not None and not args.fixture:
         raise Failure("--fixture-summary-limit is a switch of the fixture gateway; add --fixture")
     fixture_window = getattr(args, "fixture_window", None)
@@ -194,7 +195,8 @@ def load_config(args):
         thinking = FIXTURE["thinking"] if window // 4 >= 16_384 else "minimal"
         return Config(mode="fixture", base_url=None, api_key=FIXTURE["key"], model=FIXTURE["model"], window=window,
                       limit=FIXTURE["limit"], thinking=thinking, max_cost=FIXTURE["max_cost"],
-                      window_source="fixture", limit_source="fixture", summary_limit=args.fixture_summary_limit, **common)
+                      window_source="fixture", limit_source="fixture", summary_limit=args.fixture_summary_limit,
+                      reasoning_chars=getattr(args, "fixture_reasoning", None) or 0, **common)
     missing = [name for name in ("PI_LIVE_BASE_URL", "PI_LIVE_API_KEY", "PI_LIVE_MODEL") if not env.get(name)]
     if missing:
         raise Failure("Set " + ", ".join(missing) + " (live mode reads its configuration only from the environment; "
@@ -225,7 +227,8 @@ def load_config(args):
     if window < MINIMUM_WINDOW or window > 10_000_000:
         raise Failure(f"The context window must be from {MINIMUM_WINDOW:,} to 10,000,000 tokens")
     return Config(mode="live", base_url=env["PI_LIVE_BASE_URL"], api_key=env["PI_LIVE_API_KEY"], model=model, window=window, limit=limit,
-                  thinking=thinking, max_cost=max_cost, window_source=window_source, limit_source=limit_source, summary_limit=None, **common)
+                  thinking=thinking, max_cost=max_cost, window_source=window_source, limit_source=limit_source, summary_limit=None,
+                  reasoning_chars=0, **common)
 
 
 # -- output ----------------------------------------------------------------------
@@ -575,9 +578,21 @@ def seed_journal(path, messages):
             parent = ident
 
 
-def evidence(corpus, folder, seed):
-    """Ten ~28 KB files of repository text, each opening with a marker line. Each
-    fits one read: the read tool returns up to 32 KB and 2,000 lines."""
+def evidence_tokens(cfg):
+    """What one evidence file measures: 7,200 tokens from a 128,000-token
+    window up, and the same share of a smaller one (about 1,850 at 32,768).
+    A fixed 7,200 was 30% of a 32,768-token window's input in one result:
+    more than a plan may keep, so the scenario tested the edge of the window
+    and not a compaction between rounds (live, 2026-11-12)."""
+    chosen = getattr(cfg, "evidence_tokens", None)
+    return chosen or min(7_200, max(1_000, cfg.window * 7_200 // 128_000))
+
+
+def evidence(corpus, folder, seed, tokens=7_200):
+    """Ten files of repository text (~28 KB each at 7,200 tokens), each opening
+    with a marker line. Each fits one read: the read tool returns up to 32 KB
+    and 2,000 lines."""
+    least = tokens * 15 // 4
     rng = random.Random(seed)
     words = ("amber", "basalt", "cedar", "delta", "ember", "fjord", "garnet", "harbor", "indigo", "juniper", "kelp", "lumen")
     sources = [path for path in corpus.paths if sum(len(line) + 1 for line in corpus.files[path]) > 12_000]
@@ -587,14 +602,14 @@ def evidence(corpus, folder, seed):
         part, word = f"part-{index:02d}", f"{words[index - 1]}-{rng.randint(100, 999)}"
         markers[part] = word
         lines, size = [f"E2E-MARKER {part}: {word}"], 0
-        while size < 27_000:
+        while size < least:
             source = rng.choice(sources)
             text = corpus.files[source]
             start = rng.randrange(max(1, len(text) - 200))
             lines.append(f"--- excerpt of {source}, from line {start + 1} ---")
             for line in text[start:start + 200]:
                 line = line[:300]
-                if size + len(line.encode()) > 28_500:
+                if size + len(line.encode()) > least + 1_500:
                     break
                 lines.append(line)
                 size += len(line.encode()) + 1
@@ -649,7 +664,7 @@ class Session:
         # The fixture gateway pins the text-and-tool-calls wire, which since
         # 0.1.138 is a connection set to never send reasoning back. A live run
         # uses the default, as the app does: reasoning goes back.
-        if self.cfg.mode == "fixture":
+        if self.cfg.mode == "fixture" and not getattr(self.cfg, "reasoning_chars", 0):
             profile["reasoningReplay"] = "never"
         if self.cfg.limit:
             profile["modelOutputLimit"] = self.cfg.limit
@@ -759,10 +774,18 @@ def describe(attempt, request, response, gateway_record):
     prompt = ""
     items = body.get("input") or []
     user_items = [item for item in items if item.get("role") == "user"]
-    if user_items:
-        chosen = user_items[-1] if attempt["purpose"] == "compaction" else user_items[0]
-        prompt = "".join(part.get("text", "") for part in chosen.get("content", []))
     summary = attempt["purpose"] == "compaction"
+    # A summary answered with no text or a tool call is asked for once more
+    # (0.1.138): the same request and one line after its instruction.
+    asked_again = False
+    if user_items:
+        def text(item):
+            return "".join(part.get("text", "") for part in item.get("content", [])) if isinstance(item.get("content"), list) else str(item.get("content") or "")
+        asked_again = summary and len(user_items) > 1 and text(user_items[-1]) == ANSWER_AS_TEXT
+        chosen = (user_items[-2] if asked_again else user_items[-1]) if summary else user_items[0]
+        prompt = text(chosen)
+    if asked_again:
+        items = items[:-1]
     kind = reasoning_gateway.parse_summary_prompt(prompt)[0] if summary else None
     terminal = terminal_event(response)
     status = attempt.get("status")
@@ -786,6 +809,7 @@ def describe(attempt, request, response, gateway_record):
             "modelOutcome": attempt.get("modelOutcome"), "durationMs": (attempt.get("metrics") or {}).get("httpDurationMs"),
             "costUSD": cost.get("usd"), "costStatus": cost.get("status"), "requestBytes": len(request),
             "inputSHA256": hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest() if items else None,
+            "askedAgain": asked_again,
             "startsFromSummary": prompt.startswith(SUMMARY_PREFIX) and not summary, "answered": terminal is not None and status == 200,
             "costUnreported": terminal is not None and status == 200 and cost.get("status") != "reported",
             # Cut locally (a Stop) before any answer: it never reported a cost, and it is not a completed request.
@@ -866,14 +890,21 @@ class Result:
 def common_checks(result, status, stopped, bound, run):
     cfg, requests = run.cfg, result.requests
     summaries = [row for row in requests if row["purpose"] == "compaction"]
-    completed = [op for op in result.operations if op["terminal"] == "completed"]
+    # A compaction is one that sent a summary request. A plan that could not
+    # be made sent nothing and cost nothing; the helper tries again when the
+    # chat changes (0.1.137), so such rows are neither failures nor a loop.
+    asked = {row["operation"] for row in summaries}
+    operations = [op for op in result.operations if op["operation"] in asked or op["terminal"] == "completed"]
+    unsent = len(result.operations) - len(operations)
+    completed = [op for op in operations if op["terminal"] == "completed"]
     adopted = status.get("latestSuccessfulCompaction") or {}
     last = result.checkpoints[-1]["id"] if result.checkpoints else None
     result.check("compaction completed and its summary adopted",
-                 result.operations and len(completed) == len(result.operations) == len(result.checkpoints)
+                 operations and len(completed) == len(operations) == len(result.checkpoints)
                  and all(point["phase"] == "completed" for point in result.checkpoints) and adopted.get("id") == last,
-                 f"{len(completed)} of {len(result.operations)} compactions completed; "
-                 + ("; ".join(f"{op['operation'][:8] if op['operation'] else '?'}: {op['terminal']} ({short(op['detail'])})" for op in result.operations) or "none ran")
+                 f"{len(completed)} of {len(operations)} compactions completed; "
+                 + ("; ".join(f"{op['operation'][:8] if op['operation'] else '?'}: {op['terminal']} ({short(op['detail'])})" for op in operations) or "none ran")
+                 + (f"; {unsent} plans could not be made and sent nothing" if unsent else "")
                  + ("; the live context starts from the last checkpoint" if last and adopted.get("id") == last else "; the last checkpoint is not the live context"))
     exhausted = [row for row in summaries if row["stopReason"] == "max_output_tokens" or row["modelOutcome"] == "truncated"]
     result.check("no summary request ended at max_output_tokens", summaries and not exhausted,
@@ -901,20 +932,21 @@ def common_checks(result, status, stopped, bound, run):
                  result.checkpoints and not over,
                  "; ".join(f"{number(point['before'].get('requestTokens'))} → {number(point['after'].get('requestTokens'))} tokens ({point['reason']})"
                            for point in result.checkpoints) or "no checkpoint to measure")
-    asked, repeated = {}, []
+    answered, repeated = {}, []
     for row in summaries:
-        if row["answered"] and row["inputSHA256"]:
-            if row["inputSHA256"] in asked:
-                repeated.append((asked[row["inputSHA256"]], row["index"]))
-            asked.setdefault(row["inputSHA256"], row["index"])
+        if row["answered"] and row["inputSHA256"] and not row.get("askedAgain"):
+            if row["inputSHA256"] in answered:
+                repeated.append((answered[row["inputSHA256"]], row["index"]))
+            answered.setdefault(row["inputSHA256"], row["index"])
     looped = stopped is not None and stopped.startswith("loop")
     # 0.1.90's loop: a failed threshold compaction was tried again every round.
-    failed = next((index for index, op in enumerate(result.operations) if op["terminal"] == "failed"), None)
-    retried = failed is not None and failed + 1 < len(result.operations)
+    failed = next((index for index, op in enumerate(operations) if op["terminal"] == "failed"), None)
+    retried = failed is not None and failed + 1 < len(operations)
     result.check("no loop", len(summaries) <= bound and not repeated and not looped and not retried,
                  f"{len(summaries)} summary requests (at most {bound})" + ("; the same summary was asked again after an answer: "
                  + ", ".join(f"#{a} and #{b}" for a, b in repeated) if repeated else "")
-                 + (f"; compaction was tried {len(result.operations) - failed - 1} more times after one failed" if retried else "") + (f"; {stopped}" if looped else ""))
+                 + (f"; compaction was tried {len(operations) - failed - 1} more times after a summary request failed" if retried else "")
+                 + (f"; {unsent} plans that sent nothing are not counted" if unsent else "") + (f"; {stopped}" if looped else ""))
     # Idle is not finished: a task whose last reply was cut at the output limit ends idle too (0.1.138 says so).
     result.check("the run ends idle", status["state"] == "idle" and not status.get("errorCode") and not status.get("stoppedEarly") and stopped is None,
                  f"state {status['state']}" + (f", {status.get('errorCode')}: {short(status.get('preflightError'))}" if status.get("errorCode") else "")
@@ -1056,13 +1088,13 @@ def run_too_large(run, result):
 
 def run_mid_run(run, result):
     cfg = run.cfg
-    per_file = 7_200  # a ~28 KB evidence file read in full, by the helper's estimate
+    per_file = evidence_tokens(cfg)  # one evidence file read whole, by the helper's estimate
     # Well under the task-start threshold as the helper counts it (the seed's
     # estimate leaves out the instructions and schemas), so the turn starts;
     # three or four files then reach the working threshold.
     target = max(int(cfg.window * 0.3), cfg.start_threshold - 12_000)
     history = History(run.corpus, seed=17).grow(tokens=target)
-    session = Session(run, "mid-run", history, workspace=lambda folder: evidence(run.corpus, folder, seed=29))
+    session = Session(run, "mid-run", history, workspace=lambda folder: evidence(run.corpus, folder, seed=29, tokens=per_file))
     try:
         context = session.opened.get("context") or {}
         result.notes.append(f"seeded {len(history.messages):,} messages: {number(context.get('tokens'))} estimated tokens "
@@ -1219,6 +1251,10 @@ def main(argv=None):
                         help="fixture only: cap every summary's output at TOKENS, as 0.1.90 did with 13107 (the run must fail)")
     parser.add_argument("--fixture-window", type=int, metavar="TOKENS",
                         help=f"fixture only: the declared context window (default {FIXTURE['window']:,}; at least {MINIMUM_WINDOW:,})")
+    parser.add_argument("--fixture-reasoning", type=int, metavar="CHARS",
+                        help="fixture only: each turn reply carries CHARS of opaque reasoning, and the chat sends reasoning back")
+    parser.add_argument("--evidence-tokens", type=int, metavar="TOKENS",
+                        help="mid-run: the size of each evidence file (default: scaled to the window, 7,200 from 128,000 up)")
     parser.add_argument("--helper", help="the pi-native-host binary (default: the release helper under $PI_BUILD_ROOT)")
     parser.add_argument("--scenario", action="append", choices=SCENARIOS, help="run only this scenario (repeatable)")
     parser.add_argument("--keep", action="store_true", help="keep the temporary workspaces and sessions")
@@ -1238,7 +1274,7 @@ def main(argv=None):
         if cfg.mode == "fixture":
             # The model's own window is larger than the one the chat declares, as with real models.
             run.gateway = reasoning_gateway.ReasoningGateway(api_key=cfg.api_key, model=cfg.model, window=2 * cfg.window,
-                                                             summary_limit=cfg.summary_limit).start()
+                                                             summary_limit=cfg.summary_limit, reasoning_chars=cfg.reasoning_chars).start()
             run.base_url = run.gateway.base_url
         mode = "fixture (local gateway whose model reasons)" if cfg.mode == "fixture" else f"LIVE against {cfg.base_url}"
         if cfg.summary_limit is not None:

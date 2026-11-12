@@ -63,6 +63,15 @@ is never squeezed toward nothing").
   with the measured size, that input budget and the window. Nothing is dropped
   and nothing is refused locally; the provider's refusal, if it comes, is the
   overflow of "After a context rejection" above.
+- **Before such a request is sent**, a compaction that is due may keep only
+  what must stay with the checkpoint (recovery's acceptance: the replacement
+  fits `U` at the whole allowance and the byte limit and saves the safety
+  margin, not the half), and its one summary request is sent although
+  `requestTokens + instruction + allowance` passes `W`, with an 8,192-token
+  cap. After a context rejection a summary request must still fit `W`.
+- **A summary answered with no text or a tool call** is asked for once more in
+  the same compaction (the request and one line); the one-between-replies
+  count is per compaction, not per request.
 - **A reply cut at the cap** keeps `stopReason` "length", ends its task as
   `output-limited`, and the idle chat's snapshot carries
   `stoppedEarly: "output-limit"` until a later task ends otherwise.

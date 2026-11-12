@@ -934,7 +934,67 @@ reply short." It is journaled and shown, never sent to the model, and the
 task's own rows remember it: a Stop and Resume, a Retry or a reopen do not say
 it again; the next task does. It is not said where the owner turned automatic
 compaction off, for a bounded task, or after a summary that was paid for and
-failed, whose row has said why (`SessionOverWindow.swift`). The budget only sizes the local reserve
+failed, whose row has said why (`SessionOverWindow.swift`).
+
+**Before a request goes out over the window, what a refusal would allow is
+done first (0.1.138).** The second live run, 2026-11-12, a 32,768-token window
+with reasoning sent back: one file's result (7,200 tokens) and the reasoning
+that asked for it are required rows, and with the checkpoint they pass half the
+usable input. So neither the ordinary plan nor the last resort could be made,
+ten times, each costing nothing; the turn went on whole to 80,982 tokens, and
+finished only because the provider's real window was larger. 0.1.137 on the
+same task compacted five times: without the reasoning the same rows fit the
+half. The recovery plan existed for exactly these rows, but only after a
+provider's context rejection, which a generous provider never gives.
+
+When the request about to be sent does not fit beside the reply's reserve
+(`RequestContextCount.fits` is false: the state the row above describes) and a
+compaction is due, `compactAtThreshold` passes `overWindow`:
+
+- the ordinary plan comes first; where it cannot be made, the plan of **only
+  what must stay** with the checkpoint is made, on recovery's terms: the
+  replacement fits a normal request in tokens and bytes at the whole summary
+  allowance, and the completed checkpoint must fit and save the safety margin
+  (`PreparedCompaction.recoveryOnly`);
+- **the summary request goes out though it is over the window as declared**,
+  with the least a summary is allowed (8,192 tokens), never a squeezed cap. It
+  is the turn's own request and one instruction, the request that was about to
+  be sent whole anyway, and it is the way back under the window. A provider
+  that refuses it has refused a summary that was sent: `compaction_too_large`,
+  automatic compaction ends for the task, the turn's request goes whole and
+  the provider decides that too. After a context rejection the old rule
+  stands: the provider has just refused that size, and a summary request that
+  does not fit is not sent.
+
+Nothing else changes: at most one paid summary between two replies; a summary
+sent and not used ends the task's automatic compaction; a plan that cannot be
+made costs nothing and is tried again when the chat changes (the mode is part
+of `CompactionInputs`). A request past the working threshold that still fits
+is planned as before, and where no plan can be made it goes as it is: Astra's
+128,000-token case (60,000 tokens in flight at the threshold, planned one
+round later) is unchanged, and the last resort still means what it said, for
+required rows that fit the half at the summary's expected length. Rows that do
+not, a large result with its reasoning in a small window, are now relieved at
+the next request instead of never. The over-window row is left for what even
+this cannot relieve: nothing older to summarize, or required rows that do not
+fit beside the checkpoint.
+
+**A summary with no text is asked for once more (0.1.138, as Bello Hub).** Live,
+2026-11-12: one "Compact now" in three on a small Gemini model completed with
+reasoning and no text, and the chat ended in an error. When a summary request
+completes with no text, or with a tool call instead of text, the same request
+is sent once more, item for item, with one user line after its instruction
+(`AgentSession.answerAsText`: "The reply to the request above was not a
+checkpoint: it called a tool or was empty. Nothing was run. No tool can be
+called here, and the owner's messages above are not to be answered now. Reply
+with the checkpoint only, as plain text under the four headings."), so it
+extends the first request's prefix. The first answer is a failed attempt with
+its spend, none of it shown as a summary or run. A second miss is the failure
+it was: an error for a manual compaction, and for an automatic one the task's
+sent-and-unused summary. A refusal, a reply cut by the output cap or one the
+provider ended early is not asked for again. The second ask is part of the
+same compaction: it is not a second paid summary under the one-between-replies
+rule, and it has its own transient-retry budget. Manual and automatic alike. The budget only sizes the local reserve
 that decides when a chat compacts, and a request whose input fits the window
 is always sent. The helper's HTTP stream buffers without limit,
 so a consumer busy journaling or notifying the app never loses a chunk to a

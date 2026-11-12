@@ -10,6 +10,23 @@ import json
 import re
 
 
+# What a summary request ends with when it is asked a second time (0.1.138):
+# the first answer had no text, or called a tool. The request is the first one
+# and this line after it.
+ANSWER_AS_TEXT = ("The reply to the request above was not a checkpoint: it called a tool or was empty. Nothing was run. "
+                  "No tool can be called here, and the owner's messages above are not to be answered now. "
+                  "Reply with the checkpoint only, as plain text under the four headings.")
+
+
+def summary_prompt(user_texts):
+    """The instruction of a summary request among its user texts: the last
+    one, or the one before the line a second ask appends."""
+    texts = list(user_texts)
+    if len(texts) > 1 and texts[-1] == ANSWER_AS_TEXT:
+        texts.pop()
+    return texts[-1] if texts else ""
+
+
 class FixtureContractError(ValueError):
     pass
 
@@ -267,7 +284,7 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(set(calls) == set(results), "request contains a tool call without its completed result")
     if native_items == "portable":
         require(not opaque, "portable history leaked opaque provider items")
-    is_compaction = body.get("tool_choice") == "none" and bool(user_texts) and user_texts[-1].startswith("Create a concise continuation checkpoint")
+    is_compaction = body.get("tool_choice") == "none" and summary_prompt(user_texts).startswith("Create a concise continuation checkpoint")
     if is_compaction:
         require(bool(tools) and len(history) > 1, "summary must retain normal tools and typed history")
     # Retain inspection support for historical fixture requests.
