@@ -183,6 +183,8 @@ def load_config(args):
               "scenarios": args.scenario or list(SCENARIOS), "keep": args.keep, "evidence_tokens": getattr(args, "evidence_tokens", None)}
     if args.fixture_summary_limit is not None and not args.fixture:
         raise Failure("--fixture-summary-limit is a switch of the fixture gateway; add --fixture")
+    if getattr(args, "fixture_reasoning", None) is not None and not args.fixture:
+        raise Failure("--fixture-reasoning is a switch of the fixture gateway; add --fixture")
     fixture_window = getattr(args, "fixture_window", None)
     if fixture_window is not None and not args.fixture:
         raise Failure("--fixture-window is a switch of the fixture gateway; add --fixture")

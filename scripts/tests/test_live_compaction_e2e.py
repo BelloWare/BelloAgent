@@ -596,6 +596,19 @@ class SecondRunFaultTests(unittest.TestCase):
         self.assertTrue(checks["one summary request per compaction"]["passed"], checks["one summary request per compaction"])
         self.assertTrue(checks["no loop"]["passed"], checks["no loop"])
 
+    def test_a_fixture_switch_without_fixture_mode_never_starts_a_live_run(self):
+        """With PI_LIVE_* set, a forgotten --fixture would otherwise bill the gateway."""
+        live = {"PI_BUILD_ROOT": "/nonexistent", "PI_LIVE_BASE_URL": "https://unused.invalid", "PI_LIVE_API_KEY": "fake-key", "PI_LIVE_MODEL": "fake", "PI_LIVE_CONTEXT_WINDOW": "128000"}
+        for switch in (["--fixture-reasoning", "12000"], ["--fixture-window", "32768"], ["--fixture-summary-limit", "8192"]):
+            with self.subTest(switch=switch), patch.dict(os.environ, live), tempfile.NamedTemporaryFile() as helper:
+                os.chmod(helper.name, 0o755)
+                parser = argparse.Namespace(helper=helper.name, scenario=None, keep=False, fixture=False, fixture_summary_limit=None,
+                                            fixture_window=None, fixture_reasoning=None, evidence_tokens=None)
+                setattr(parser, switch[0][2:].replace("-", "_"), int(switch[1]))
+                with self.assertRaises(harness.Failure) as raised:
+                    harness.load_config(parser)
+                self.assertIn("add --fixture", str(raised.exception))
+
     def test_the_evidence_files_scale_with_the_window(self):
         self.assertEqual(harness.evidence_tokens(harness.Config(window=128_000)), 7_200)
         self.assertEqual(harness.evidence_tokens(harness.Config(window=400_000)), 7_200)
