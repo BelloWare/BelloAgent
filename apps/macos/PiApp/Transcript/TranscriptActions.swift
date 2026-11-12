@@ -84,7 +84,7 @@ struct TranscriptActions {
     /// through the model and the session it was made for; what can differ
     /// between two sets made for the same session is only which are offered.
     var offered: [Bool] {
-        [quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
+        [continueWithoutReasoning != nil, quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
          fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil, openSubagent != nil, inspectSubagent != nil, stopSubagent != nil, openAgentSource != nil, loadImage != nil]
     }
 }
@@ -112,6 +112,7 @@ extension TranscriptActions {
             stop: { source()?.stop() },
             retry: { source()?.retry() },
             resume: { source()?.resume() },
+            continueWithoutReasoning: { source()?.continueWithoutReasoning?() },
             inspectTurn: { source()?.inspectTurn?($0) },
             skillPressed: { source()?.skillPressed?($0, $1, $2) },
             skillHovered: { source()?.skillHovered?($0, $1, $2, $3) },

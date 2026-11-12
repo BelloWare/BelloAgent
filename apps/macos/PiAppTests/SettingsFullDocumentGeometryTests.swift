@@ -139,6 +139,13 @@ import XCTest
         XCTAssertGreaterThanOrEqual(nativeBottom.origin + nativeBottom.clipHeight, page.items[6].frame.maxY,
                                     "The entire final Retries group and footnote are reachable")
         try record("bottom", kind: "native", snapshot: nativeBottom, groups: frames(page), window: nativeWindow)
+        // The Reasoning continuation group (0.1.138) lies between the first
+        // screen and the last: shown once, for the component gallery's image.
+        if let group = frames(page)[.reasoning], page.isFlipped {
+            nativeScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, group.minY - 24))); nativeScroll.reflectScrolledClipView(nativeScroll.contentView)
+            let shown = try await settle(native, window: nativeWindow, scroll: nativeScroll, phase: "native-reasoning")
+            try record("reasoning", kind: "native", snapshot: shown, groups: frames(page), window: nativeWindow)
+        }
         scroll(nativeScroll, toBottom: false)
         let nativeTop = try await settle(native, window: nativeWindow, scroll: nativeScroll, phase: "native-returned-top")
         XCTAssertEqual(nativeTop.origin, 0, accuracy: 0.5)
@@ -223,6 +230,9 @@ import XCTest
                       lazy: lazy, lazyScroll: lazyScroll, eagerView: eager, eagerScroll: eagerScroll, lazyWindow: lazyWindow, eagerWindow: eagerWindow)
     }
 
+    /// What the Reasoning continuation footer of 0.1.138 adds to the frozen
+    /// page's at the fixture's width: one line of its 11-point text.
+    static let reasoningFooterLine: CGFloat = 14
     /// Every way `oracle` differs from the native page; empty when the native
     /// page matches it. Strict against the realized lazy oracle; the eager
     /// copy is supplemental and allows the point its stack can round.
@@ -232,16 +242,23 @@ import XCTest
             if abs(actual - expected) > accuracy { found.append("\(what): native \(actual), oracle \(expected)") }
         }
         let nativeFrames = frames(native.page)
-        for group in SettingsReferenceGroup.allCases {
+        // The Reasoning continuation footer (0.1.138) says what is sent back,
+        // what a refusal does and what the other two choices mean: one line
+        // more than the frozen page's footer at this width. The group is that
+        // line taller, and every group after it sits that much lower.
+        let footerLine = Self.reasoningFooterLine
+        let order = SettingsReferenceGroup.allCases, reasoning = order.firstIndex(of: .reasoning) ?? order.count
+        for (index, group) in order.enumerated() {
             guard let actual = nativeFrames[group], let expected = oracle.lazyFrames[group], let eagerFrame = oracle.eagerFrames[group] else {
                 found.append("\(group.rawValue): missing frame"); continue
             }
+            let taller = index == reasoning ? footerLine : 0, lower = index > reasoning ? footerLine : 0
             check(actual.width, expected.width, 0.5, "\(group.rawValue) original complete width")
-            check(actual.height, expected.height, 0.5, "\(group.rawValue) original complete height")
-            check(actual.minY, expected.minY, 0.5, "\(group.rawValue) original complete position")
+            check(actual.height, expected.height + taller, 0.5, "\(group.rawValue) original complete height")
+            check(actual.minY, expected.minY + lower, 0.5, "\(group.rawValue) original complete position")
             check(actual.width, eagerFrame.width, 0.5, "\(group.rawValue) supplemental eager width")
-            check(actual.height, eagerFrame.height, 1.01, "\(group.rawValue) supplemental eager height")
-            check(actual.minY, eagerFrame.minY, 1.01, "\(group.rawValue) supplemental eager position")
+            check(actual.height, eagerFrame.height + taller, 1.01, "\(group.rawValue) supplemental eager height")
+            check(actual.minY, eagerFrame.minY + lower, 1.01, "\(group.rawValue) supplemental eager position")
         }
         let initial = native.initial, page = native.page
         check(initial.clipWidth, oracle.lazyBottom.clipWidth, 0.5, "lazy clip width")
@@ -250,11 +267,11 @@ import XCTest
         // native page is the original plus that group and its spacing.
         let retries = page.items[6].frame.maxY - page.items[5].frame.maxY
         if retries <= 100 { found.append("Retries group spans \(retries)") }
-        check(initial.documentHeight - retries, oracle.lazyBottom.documentHeight, 0.5, "The native page retains the original complete content height")
+        check(initial.documentHeight - retries - footerLine, oracle.lazyBottom.documentHeight, 0.5, "The native page retains the original complete content height")
         check(initial.knob, oracle.lazyBottom.knob * oracle.lazyBottom.documentHeight / initial.documentHeight, 0.002, "The native thumb matches the original fully realized page")
         check(initial.clipWidth, oracle.eager.clipWidth, 0.5, "eager clip width")
         check(initial.clipHeight, oracle.eager.clipHeight, 0.5, "eager clip height")
-        check(initial.documentHeight - retries, oracle.eager.documentHeight, 1.01, "The native page retains the complete old content height")
+        check(initial.documentHeight - retries - footerLine, oracle.eager.documentHeight, 1.01, "The native page retains the complete old content height")
         check(oracle.lazyBottom.knob, oracle.eager.knob, 0.001, "The old thumb at the bottom reflects the complete content")
         check(initial.knob, oracle.eager.knob * oracle.eager.documentHeight / initial.documentHeight, 0.002, "The native thumb reflects the complete content")
         return found
@@ -311,11 +328,15 @@ import XCTest
         let nativeFrames = frames(native.page)
         let retries = native.page.items[6].frame.maxY - native.page.items[5].frame.maxY
         func oracle(off points: CGFloat) -> Oracle {
+            // The frozen page as it would measure: the native one without the
+            // footer line its Reasoning group has gained (0.1.138).
             var groups = nativeFrames
             groups[.connection]?.size.height += points
+            groups[.reasoning]?.size.height -= Self.reasoningFooterLine
             for group in [SettingsReferenceGroup.reasoning, .metadata, .routing, .capabilities] { groups[group]?.origin.y += points }
+            for group in [SettingsReferenceGroup.metadata, .routing, .capabilities] { groups[group]?.origin.y -= Self.reasoningFooterLine }
             var complete = native.initial
-            complete.documentHeight = native.initial.documentHeight - retries + points
+            complete.documentHeight = native.initial.documentHeight - retries - Self.reasoningFooterLine + points
             complete.knob = native.initial.knob * native.initial.documentHeight / complete.documentHeight
             complete.origin = 0
             return Oracle(lazyInitial: complete, lazyBottom: complete, lazyTop: complete, eager: complete, lazyFrames: groups, eagerFrames: groups,
