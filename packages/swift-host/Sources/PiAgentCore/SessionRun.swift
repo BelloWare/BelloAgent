@@ -305,6 +305,8 @@ extension AgentSession {
                                 guard userDelivered || agentDelivered else { return nil }
                                 overflowRecoveryAttempted=false
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
+                                // What was delivered may have carried the retried request over the window.
+                                try noteOverWindow(prepared.count)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
                             })
                         } catch let error as AgentError where reasoningWidening(error) != nil {

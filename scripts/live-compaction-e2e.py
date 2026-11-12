@@ -48,7 +48,8 @@ PI_LIVE_MAX_COST_USD, less the dearest request so far, because a request
 already sent finishes past a chat's limit. A completed request whose cost the
 gateway does not report stops the run. A request this script cut when it
 stopped a run (a loop, a timeout) never reported one: the run's dearest request
-is set aside for it and the remaining scenarios go on. The key goes to the helper over its
+is set aside for it and the remaining scenarios go on (with no request priced
+yet, nothing measures it and the run stops). The key goes to the helper over its
 wire protocol only; it is never printed or written, and every report file is
 scanned for it.
 
@@ -945,6 +946,11 @@ def count_spend(run, session, result):
     # Whatever else is unpriced still does, also when its row is gone (the
     # helper keeps its last 64 requests).
     interrupted = sum(bool(row.get("interrupted")) for row in result.requests)
+    # What is set aside for it is the run's dearest request so far. With none
+    # priced yet (the run's first request was the one cut) nothing measures
+    # it, and the spend stays unknown.
+    if not max([run.dearest] + [row["costUSD"] or 0 for row in result.requests]) > 0:
+        interrupted = 0
     unreported = max((unreported if type(unreported) is int else 0) - interrupted, sum(row["costUnreported"] for row in result.requests), 0)
     if known:
         run.spent += spent

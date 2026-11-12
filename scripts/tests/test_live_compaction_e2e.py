@@ -426,10 +426,21 @@ class HarnessFaultTests(unittest.TestCase):
         self.assertTrue(result.checks[-1]["passed"], result.checks[-1])
         self.assertIn("interrupted", result.checks[-1]["detail"])
 
+    def test_an_interrupted_request_with_nothing_to_measure_it_by_still_ends_the_run(self):
+        """The first request of a run, cut before any request reported a
+        cost: nothing says what to set aside for it, and it may be billed."""
+        run = self.run_of()
+        result = self.settled(run, [{"costUSD": None, "costUnreported": False, "interrupted": True}], unreported=1, spent=0.0)
+        self.assertEqual(run.unreported, 1)
+        self.assertEqual(run.reserved, 0.0)
+        self.assertEqual(run.budget(), 0)
+        self.assertEqual(result.cost["interruptedWithoutCost"], 0)
+
     def test_a_completed_request_without_a_cost_still_ends_the_run(self):
         for rows, unreported in [([{"costUSD": None, "costUnreported": True, "interrupted": False}], 1),
                                  # One more than the script cut: a completed request went unpriced.
-                                 ([{"costUSD": None, "costUnreported": False, "interrupted": True}], 2),
+                                 ([{"costUSD": 0.0019, "costUnreported": False, "interrupted": False},
+                                   {"costUSD": None, "costUnreported": False, "interrupted": True}], 2),
                                  # The helper keeps its last 64 requests: a row may be gone, its count is not.
                                  ([], 1)]:
             with self.subTest(rows=rows, unreported=unreported):

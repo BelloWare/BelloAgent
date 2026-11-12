@@ -146,6 +146,26 @@ final class OverWindowTests: HelperTestCase {
         await s.close()
     }
 
+    /// A request that fitted fails for a passing reason, and steering that
+    /// arrives during the wait makes the retried request another, larger
+    /// one: it is said for that request as for any other.
+    func testARetriedRequestThatSteeringMadeTooLargeSaysSoToo() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let busy = AgentError("provider_http", "HTTP 503 overloaded")
+        let client = OverClient([.fail(busy), .reply(answer("Read it."))])
+        let s = try session(root, client)
+        await s.useRetrySettings(.init(enabled: true, maxRetries: 1, baseDelayMs: 1_500))
+        _ = try await s.submit(Submission(commandID: "c", turnID: "task", text: task), steer: false)
+        try await eventually(timeout: .seconds(30)) { await s.snapshot(["includeMessages": false])["runStatus"].text == "retrying" }
+        _ = try await s.submit(Submission(commandID: "d", turnID: "steer", text: "Also this: " + String(repeating: "s", count: 240_000)), steer: true)
+        let state = try await settled(s), sent = await client.sent, rows = await notices(s)
+        XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        XCTAssertEqual(sent.count, 2); XCTAssertGreaterThan(RequestContextCounter.projectedTokens(try XCTUnwrap(sent.last).body), 50_000, "The retried request carries the steering")
+        XCTAssertEqual(sent.last?.cap, ceiling)
+        XCTAssertEqual(rows.count, 1, "The enlarged request is over the window, and the chat says so")
+        await s.close()
+    }
+
     /// The notice is in the journal: a reopened chat resumes the same task
     /// without saying it again.
     func testAReopenedChatDoesNotRepeatTheTasksNotice() async throws {
