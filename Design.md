@@ -895,12 +895,46 @@ sidebar opens 300 points wide.
 
 A reply that reaches the output limit is a complete row with `stopReason`
 "length", shown with a warning under it (ask the model to continue); the
-turn ends idle and queued follow-ups go on. The output budget is metadata:
+turn ends idle and queued follow-ups go on. It is not a task that completed:
+its outcome is `output-limited`, and from 0.1.138 an idle chat whose last task
+ended that way says so in its snapshot (`stoppedEarly: "output-limit"`), so a
+client that reads only `state` does not take a cut reply for a finished one.
+The output budget is metadata:
 it is never sent as a limit and never fails a turn. A conversation request
 carries the model's catalog ceiling as `max_output_tokens`, clipped to the
-room the context estimate leaves in the window, or no limit at all when the
-catalog gives none; bounded tasks (connection test, title, compaction
-summary) send their own small caps. The budget only sizes the local reserve
+room the context estimate leaves in the window while that room still holds a
+reply, or no limit at all when the catalog gives none; bounded tasks
+(connection test, title, compaction summary) send their own small caps.
+
+**The output limit is never squeezed toward nothing (0.1.138).** Pi clips the
+ceiling to `window − estimate − 4,096` and sends that room however small, at
+least 16 tokens. Live, 2026-11-12: a model asked for ten file reads in one
+batch; the next request measured 78,362 tokens in a window declared as 50,000,
+went out with `max_output_tokens: 16`, and its 17-token reply, cut at that cap,
+ended the task with the chat idle. The decision, as in Bello Hub: what must
+stay (the task's request, steering, the newest batch of results) is never
+dropped, a declared window can be conservative, so the request goes out whole
+and with the ordinary limit. `PiContext.outputCap`: the clip applies while the
+room is at least the chat's output reserve, or 4,096 tokens where the reserve
+is larger (and never more than the ceiling itself); with less room the ceiling
+goes unclipped and the gateway decides, as it already does for the input.
+Every request inside the usable input of a window of 32,768 tokens or more has
+that room, so a chat that compacts in time sends what it sent before. A
+gateway that counts the limit against its window refuses such a request, and
+that refusal is the context overflow it always was.
+
+**Over the window, said once per task (0.1.138).** When the request about to
+be sent does not fit beside the reply's reserve (`RequestContextCount.fits`)
+in a chat that compacts by itself, nothing that could be summarized made room.
+The chat gets one presentation row for the task, an execution record like a
+compaction's: "Context · This request is about 78,362 tokens, more than the
+41,308 that this model's 50,000-token window leaves for input. Nothing was
+summarized away, and it is sent whole: the provider may refuse it, or cut the
+reply short." It is journaled and shown, never sent to the model, and the
+task's own rows remember it: a Stop and Resume, a Retry or a reopen do not say
+it again; the next task does. It is not said where the owner turned automatic
+compaction off, for a bounded task, or after a summary that was paid for and
+failed, whose row has said why (`SessionOverWindow.swift`). The budget only sizes the local reserve
 that decides when a chat compacts, and a request whose input fits the window
 is always sent. The helper's HTTP stream buffers without limit,
 so a consumer busy journaling or notifying the app never loses a chunk to a
@@ -1413,6 +1447,41 @@ before. The summarizer's instruction keeps "Do not continue its task" and gains
 one bounded sentence: keep a short owner request or constraint as written where
 the wording matters, and name the interrupted step. No live model run has
 validated either text.
+
+**A summary records; it does not order work redone (0.1.138).** Live,
+2026-11-12, a small OpenAI model on the end-to-end test's mid-run task: the
+task forbade `offset` and `limit`, the model passed both as it always does, and
+every summary ruled the reads invalid and ended "If the task is resumed,
+restart at `evidence/part-01.txt`". The agent obeyed: ten compactions, never
+past part-09. Bello Hub's summary of the same task on the same model recorded
+the progress; its instruction says "Say what work is in progress" where this
+one said only to name the interrupted step. Two additions, and nothing else
+moves (the summary stays first; the prompt keeps its structure and headings):
+
+- the instruction gains one sentence after the interrupted step: "Record work
+  that was done as done, noting where it departed from what was asked; next
+  steps go on from the current state and never tell the reader to redo or
+  restart finished work.";
+- a mid-task checkpoint's own line gains a clause: "… without asking the owner
+  to repeat them, and without redoing work the summary records as done."
+
+The line is frozen in each checkpoint's record, so a checkpoint made by
+0.1.137 replays 0.1.137's words byte for byte, and 0.1.137 renders whatever a
+record holds. Neither text has been validated on a live model yet; the
+harness's own prompt no longer forbids the arguments, which alone made the
+same model pass.
+
+**Not built: a guard against compactions that make no progress.** The
+suppression rules above bound summaries that fail; nothing bounds summaries
+that succeed while the task goes round in circles. A cheap guard would count,
+per task, adopted automatic checkpoints since the task's context last held
+something new: at each adoption compare the set of tool calls (name and
+arguments) made since the previous checkpoint with the set made before it; two
+adoptions in a row that add no new call would end automatic compaction for the
+task as a failed summary does, with a row that says the task is repeating
+itself. It costs a hash set per task and no request. It is described here and
+not built: it would also stop a task that legitimately polls, and the wording
+above removes the one cause seen.
 
 A new unanswered input and current structured skill/permission carriers remain
 authoritative; a summary does not authorize tools or change selection or

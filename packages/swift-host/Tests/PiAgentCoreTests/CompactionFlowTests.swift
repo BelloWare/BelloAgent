@@ -357,7 +357,7 @@ final class CompactionFlowTests: HelperTestCase {
         XCTAssertEqual(following.count,3)
         let first=try item(following,0), checkpoint=try item(first["input"].list,1), text=checkpoint["content"].list.first?["text"].text ?? ""
         XCTAssertTrue(text.hasPrefix(ProviderClient.compactionSummaryPrefix+"SUMMARY 1"+ProviderClient.compactionSummarySuffix),String(text.prefix(160)))
-        XCTAssertTrue(text.hasSuffix("</summary>\n\n"+continuation+" Continue from the retained request and latest results without asking the owner to repeat them."),String(text.suffix(200)))
+        XCTAssertTrue(text.hasSuffix("</summary>\n\n"+continuation+" Continue from the retained request and latest results without asking the owner to repeat them, and without redoing work the summary records as done."),String(text.suffix(200)))
         for body in following.dropFirst() { XCTAssertEqual(try item(body["input"].list,1),checkpoint,"The checkpoint item never changes") }
         XCTAssertEqual(context.first?.compaction?["after"]["requestTokens"].int,RequestContextCounter.projectedTokens(first),"Counted with its framing")
         await s.close()

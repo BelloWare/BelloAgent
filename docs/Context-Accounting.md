@@ -47,6 +47,28 @@ keeps"). The counting below is unchanged; what is compared with it changed:
 - **One automatic summary request** at most between two replies of the model
   (a new task counts afresh; steering does not).
 
+## A request over the window, 0.1.138
+
+Live, 2026-11-12: ten file reads in one batch made a 78,362-token request in a
+window declared as 50,000; it went out with `max_output_tokens: 16` and the
+17-token reply was taken for the task's answer (`Design.md`, "The output limit
+is never squeezed toward nothing").
+
+- **The wire output cap** is the model ceiling clipped to
+  `R = W − estimate − 4,096` while `R ≥ min(ceiling, output reserve, 4,096)`,
+  and the ceiling unclipped below that (`PiContext.outputCap`). 0.1.89 to
+  0.1.137 sent `max(R, 16)`. A bounded task's own cap is sent as it is.
+- **The notice.** A request with `requestTokens > W − output reserve − margin`
+  (`fits` is false) in a chat with automatic compaction gets one row per task
+  with the measured size, that input budget and the window. Nothing is dropped
+  and nothing is refused locally; the provider's refusal, if it comes, is the
+  overflow of "After a context rejection" above.
+- **A reply cut at the cap** keeps `stopReason` "length", ends its task as
+  `output-limited`, and the idle chat's snapshot carries
+  `stoppedEarly: "output-limit"` until a later task ends otherwise.
+- **The summary instruction** is one sentence longer (about 40 tokens), which
+  the usable input already measures: `I` is the measured instruction.
+
 ## Reasoning in a request, 0.1.138
 
 A connection sends a reply's reasoning back by default, for replies stored from
@@ -62,7 +84,7 @@ plan alike, since all three read the same projection.
 Every context decision now uses pi 0.85.1's figures, and the older sections below are history:
 - **The meter and compaction threshold** use `estimateContextTokens` over the messages: the last valid reply's reported total plus characters over four for the rows after it.
 - **A request** is sized as `estimateContextTokens(context)` in `packages/ai` sizes it. With a measured reply, that is the same figure. Before any reply has measured the context, it is the rows plus the system prompt and the tool schemas, each at characters over four. Images count 4,800 characters, and opaque reasoning replay counts nothing.
-- **The wire output cap** is `clampMaxTokensToContext`: the model ceiling, clipped to the window less the estimate and 4,096, and at least one token.
+- **The wire output cap** is `clampMaxTokensToContext`: the model ceiling, clipped to the window less the estimate and 4,096, and at least one token. (0.1.138 no longer clips to a room too small for a reply: "A request over the window" above.)
 - **Refusals.** As in pi, no estimate stops a turn's request before it is sent. The gateway decides; a context rejection is compacted and retried once. Compaction and its summary reserve use the same units. A compaction is one summary request, never chunks: one that cannot hold its source beside the summary's room is not sent, and the compaction fails with `compaction_too_large`.
 
 The UTF-8 bytes / 3 heuristic, with its image-dimension and opaque-reasoning allowances, is gone. It sized requests well above pi's figure. A turn stopped with "Estimated request input plus the safety margin exceeds configured capacity" on chats pi measured well inside the window.

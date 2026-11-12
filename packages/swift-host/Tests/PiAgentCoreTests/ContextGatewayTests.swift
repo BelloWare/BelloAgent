@@ -135,7 +135,7 @@ final class ContextGatewayTests: HelperTestCase {
         let blocked = await session.snapshot(["includeMessages": false]), requests = await client.count
         XCTAssertEqual(requests, 1, "pi never refuses a request on its estimate; the gateway decides")
         let profiles = await client.profiles
-        XCTAssertEqual(profiles.first?.wireOutputLimit, 16, "with no room left clampMaxTokensToContext leaves one token, and pi sends at least 16")
+        XCTAssertEqual(profiles.first?.wireOutputLimit, 2048, "with no room left the ceiling goes unclipped (0.1.138); pi's 16 tokens made a cut reply an answer")
         XCTAssertEqual(blocked["context"]["tokens"], prepared["count"]["tokens"])
         XCTAssertEqual(blocked["context"]["requestTokens"], prepared["count"]["requestTokens"])
         XCTAssertEqual(blocked["context"]["requestFingerprint"], prepared["count"]["requestFingerprint"])

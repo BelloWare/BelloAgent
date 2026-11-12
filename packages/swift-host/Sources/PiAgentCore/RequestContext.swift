@@ -101,6 +101,25 @@ enum PiContext {
         return contextWindow - contextSafetyTokens - max(0, requestTokens)
     }
 
+    /// Ours (0.1.138): the output limit a conversation request carries. Pi
+    /// clips the model's ceiling to the room the estimate leaves and sends
+    /// that room however small, down to 16 tokens; a live reply cut at 16 was
+    /// taken for a task's answer (2026-11-12: ten file reads in one batch,
+    /// 78,362 tokens in a window declared as 50,000).
+    ///
+    /// The clip stays while the room still holds a reply: the chat's output
+    /// reserve, or 4,096 tokens (pi's own safety figure) where the reserve is
+    /// larger. Every request within the usable input of a window of 32,768
+    /// tokens or more has that much, so nothing changes for a chat that
+    /// compacts in time. With less room the window as declared no longer says
+    /// what the reply can have: it may be conservative, and what must stay is
+    /// never dropped to make room. The ceiling then goes unclipped and the
+    /// gateway decides, as it already does for the input.
+    static let leastOutputRoom = 4_096
+    static func outputCap(ceiling: Int, room: Int, reserve: Int) -> Int {
+        room >= min(ceiling, reserve, leastOutputRoom) ? min(ceiling, room) : ceiling
+    }
+
     /// estimateContextTokens over the rows the next request replays.
     static func estimateContextTokens(_ messages: [ChatMessage]) -> Estimate {
         guard let index = messages.lastIndex(where: { assistantUsage($0) != nil }) else {
@@ -193,8 +212,9 @@ struct RequestContextCount: Sendable {
     let outputBudget: Int
     let modelOutputLimit: Int?
     /// The output limit the request carries: a bounded task's explicit cap as
-    /// is, the model ceiling clipped to the room the input leaves, or nothing;
-    /// never below the 16 tokens Responses accepts, as pi sends it.
+    /// is, the model ceiling clipped to the room the input leaves while that
+    /// room holds a reply (`PiContext.outputCap`), or nothing; never below
+    /// the 16 tokens Responses accepts.
     let outputCap: Int?
     let reserveTokens: Int
     var method: String { Self.method }
@@ -289,7 +309,7 @@ struct RequestContextCounter: Sendable {
             requestMethod: requestMethod, lastUsageID: anchor?.id, countedModel: identity?["status"].text == "reported" ? identity?["effectiveModel"].text : nil,
             requestedModel: profile.model, requestFingerprint: try request.map { try Self.fingerprint($0, profile: profile) },
             warnings: warnings, contextWindow: profile.contextWindow, outputBudget: profile.maxOutput, modelOutputLimit: profile.modelOutputLimit,
-            outputCap: profile.wireOutputLimit.map { max(ProviderClient.minimumOutputTokens, profile.outputCap != nil ? $0 : min($0, room)) }, reserveTokens: reserveTokens)
+            outputCap: profile.wireOutputLimit.map { max(ProviderClient.minimumOutputTokens, profile.outputCap != nil ? $0 : PiContext.outputCap(ceiling: $0, room: room, reserve: profile.maxOutput)) }, reserveTokens: reserveTokens)
     }
     /// Counts the actual model-facing projection, not capture bytes. Images
     /// use the existing allowance; opaque ciphertext is never treated as text.

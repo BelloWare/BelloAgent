@@ -11,7 +11,52 @@ import XCTest
 /// their quiet lines in the transcript), a third still standing in the saved
 /// state, and a checkpoint that carries what is withheld. None of that exists
 /// in a release before 0.1.138.
+///
+/// A second chat comes from `OverWindowTests`: a task whose request is over
+/// the model's window, with the row that says so (an execution record of a
+/// kind this release already draws) and a failed run to retry. And a
+/// checkpoint record whose framing line has 0.1.138's added clause: this
+/// release sends whatever line a record holds.
 final class OlderReaderTests: HelperTestCase {
+    func testAChatWithAnOverWindowNoticeOpensAndGoesOn() async throws {
+        guard let out = ProcessInfo.processInfo.environment["PI_OVERWINDOW_COMPAT_OUT"], !out.isEmpty else { throw XCTSkip("Run by scripts/older-reader-check.sh") }
+        let source = URL(fileURLWithPath: out), root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let export = try JSON.parse(Data(contentsOf: source.appendingPathComponent("export.json")))
+        try FileManager.default.copyItem(at: source.appendingPathComponent("state"), to: root.appendingPathComponent("state"))
+        let journal = root.appendingPathComponent("state").appendingPathComponent(try XCTUnwrap(export["journal"].text))
+        XCTAssertTrue(try String(contentsOf: journal, encoding: .utf8).contains("Context · This request is about"))
+        let profile = try Profile(export["profile"])
+        for resumed in [true, false] {
+            if !resumed { try? FileManager.default.removeItem(at: JournalCheckpoint.url(for: journal)) }
+            let client = ScriptClient([answer("Done after all.")])
+            let session = try AgentSession(id: "over", profile: profile, apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                           resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: journal.path)
+            let context = await session.context, history = await session.history, state = await session.snapshot(["includeMessages": false])
+            let notice = history.filter { $0.kind == "execution" && ($0.detail ?? "").hasPrefix("Context · ") }
+            XCTAssertEqual(notice.count, 1, "The row is read as the execution record it is (\(resumed))"); XCTAssertEqual(notice.first?.replayEligible, false)
+            XCTAssertFalse(context.contains { ($0.detail ?? "").hasPrefix("Context · ") }, "and is no part of what is sent")
+            XCTAssertEqual(context.filter { $0.role == "toolResult" }.count, 10, "Every result of the batch is there")
+            XCTAssertEqual(state["state"].text, "error")
+            try await session.retryRun(overrides: [:])
+            try await eventually { !(await session.isRunning) }
+            let after = await session.snapshot(["includeMessages": false]), last = await session.context.last
+            XCTAssertEqual(after["state"].text, "idle", after["preflightError"].encoded()); XCTAssertEqual(last?.text, "Done after all.")
+            await session.close()
+            try FileManager.default.removeItem(at: root.appendingPathComponent("state"))
+            try FileManager.default.copyItem(at: source.appendingPathComponent("state"), to: root.appendingPathComponent("state"))
+        }
+    }
+
+    func testACheckpointWithALaterBuildsFramingLineIsSentAsRecorded() throws {
+        guard ProcessInfo.processInfo.environment["PI_OVERWINDOW_COMPAT_OUT"]?.isEmpty == false else { throw XCTSkip("Run by scripts/older-reader-check.sh") }
+        let line = "The task was in progress when this checkpoint was made. Continue from the retained request and latest results without asking the owner to repeat them, and without redoing work the summary records as done."
+        let record: JSON = ["type": "compaction", "id": "cp", "summary": "## Progress and evidence\nparts 01 to 06 read", "nativeCompactionVersion": 2, "nativeKeptIDs": [], "tokensBefore": 9000,
+                            "nativeCompaction": ["version": 2, "continuationText": JSON(line), "operationId": "op", "keptIDs": [], "sourceIDs": [], "protectedIDs": []]]
+        let summary = try CompactionCheckpoint.summary(record)
+        let sent = ProviderClient.userContent(summary, images: false).first?["text"].text ?? ""
+        XCTAssertTrue(sent.hasSuffix("</summary>\n\n" + line), sent)
+    }
+
     func testAChatAndAConnectionWrittenByALaterBuildOpenAndGoOn() async throws {
         guard let out = ProcessInfo.processInfo.environment["PI_REASONING_COMPAT_OUT"], !out.isEmpty else { throw XCTSkip("Run by scripts/older-reader-check.sh") }
         let source = URL(fileURLWithPath: out), root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }

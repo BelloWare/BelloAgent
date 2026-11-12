@@ -287,6 +287,8 @@ extension AgentSession {
                     var recovered=false, completed: ModelReply?
                     while completed == nil {
                         try Task.checkCancellation()
+                        // Over the window with nothing adopted to relieve it: said once per task, then sent whole.
+                        try noteOverWindow(prepared.count)
                         let dispatchProfile=try turnProfile.dispatching(prepared.count)
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus = .running; modelActive=true; event("message_start")
