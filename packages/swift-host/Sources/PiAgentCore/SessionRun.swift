@@ -46,6 +46,28 @@ extension AgentSession {
         guard let range = message.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return nil }
         return Int(message[range].dropFirst(5))
     }
+    /// A response stream that began and was then broken off: it ended
+    /// without its terminal event, or its connection failed after the
+    /// response head arrived. Not a failure the gateway reported.
+    static func isBrokenStream(_ error: AgentError) -> Bool {
+        // pi's text for a transport failure after the response head (`PiErrorText.transport`).
+        error.code == "incomplete_stream" || error.code == "provider_transport" && error.providerMessage == "terminated"
+    }
+    /// Ours (owner, 2026-11-13): how many broken streams one request may
+    /// have before it is not sent again. Pi retries them like any transient
+    /// failure, up to the retry setting (3; the app allows 10). A proxy that
+    /// ends every response at a fixed time (Envoy in front of LiteLLM cut
+    /// gpt-6-astra replies at 60 s) breaks each identical re-send at the same
+    /// point, and each one is paid for and leaves its partial reply: one
+    /// re-send covers a dropped connection, a second break stops the run.
+    static let brokenStreamLimit = 2
+    /// The run's failure when the same request broke `durations` times.
+    static func brokenStreamFailure(_ error: AgentError, durations: [Double]) -> AgentError {
+        let seconds = durations.map { "\(Int(($0 / 1000).rounded())) s" }
+        let message = "The connection was closed before the reply finished, \(durations.count) times for this request (after \(seconds.joined(separator: " and "))), so the request was not sent again. "
+            + "A time limit on the gateway or a proxy in front of it is the likely cause. Retry sends it once more. Last error: " + error.message
+        return AgentError(error.code, message, failure: error.failure, attemptID: error.attemptID, providerMessage: error.providerMessage, discardIncompleteReply: error.discardIncompleteReply)
+    }
     /// `refresh` runs after a retry's back-off. Pi retries by continuing its
     /// agent loop, which first delivers queued steering; when it does, the
     /// retried request is the one it returns.
@@ -56,6 +78,8 @@ extension AgentSession {
         let retry = retrySettings
         let attempts = retry.enabled ? 1 + max(0, retry.maxRetries) : 1
         var attempt = 0
+        // How long each broken stream of this request ran (`brokenStreamLimit`).
+        var broken: [Double] = []
         modelRequestsMs = 0; modelReplyMs = 0
         // The retry notice describes this request only. It goes whichever way
         // the request ends: a reply, a failure, or a Stop that cancels the
@@ -98,6 +122,10 @@ extension AgentSession {
                     // exhausted. Its ledger/capture and accounting remain;
                     // neither a retry nor crash recovery may adopt its reply.
                     try discardIncompleteReply()
+                }
+                if Self.isBrokenStream(error) { broken.append(nowMS()-started) }
+                if broken.count >= Self.brokenStreamLimit, attempt < attempts, Self.isRetryable(error), !Task.isCancelled {
+                    throw Self.brokenStreamFailure(error, durations: broken)
                 }
                 guard attempt < attempts, Self.isRetryable(error), !Task.isCancelled else {
                     throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID,providerMessage:error.providerMessage) : error

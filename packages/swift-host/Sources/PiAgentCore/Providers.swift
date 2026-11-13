@@ -285,9 +285,20 @@ public struct ProviderClient: ModelClient {
             let discardIncomplete = incomplete?.code == "provider_incomplete_unexplained"
             observation.interrupt(at:nowMS())
             let cancelled=Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+            // What this attempt failed with: thrown below, and kept in its
+            // request log with the connection's own error, so the reason is
+            // read there rather than worked out from the outcome fields.
+            // A transport failure after this terminal cannot turn its rejected
+            // content back into an ordinary interrupted reply.
+            let failure: AgentError? = cancelled ? nil : (incomplete ?? (error as? AgentError)).map {
+                Self.safeFailure(AgentError($0.code,$0.message,failure:$0.failure,attemptID:attempt,providerMessage:$0.providerMessage,discardIncompleteReply:$0.discardIncompleteReply), credentials: credentials)
+            } ?? AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt, afterResponse: status != 0),failure:.transientTransport,attemptID:attempt,
+                            providerMessage:PiErrorText.transport(error,afterResponse:status != 0))
             if !captureFinished {
-                await traces.transport(attempt,observation:await stream.endObservation())
-                await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
+                let ended = await stream.endObservation()
+                await traces.transport(attempt,observation:ended)
+                let record = failure.map { Self.failureRecord($0, cause: error, afterMs: ended["httpEnd"].double.flatMap { end in ended["dispatch"].double.map { end - $0 } }) }
+                await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted",failure:record)
                 observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             }
             if !settlementStarted, let lifecycle {
@@ -299,12 +310,22 @@ public struct ProviderClient: ModelClient {
                 if discardIncomplete { throw UnexplainedIncompleteCancellation(attemptID:attempt) }
                 throw CancellationError()
             }
-            // A transport failure after this terminal cannot turn its rejected
-            // content back into an ordinary interrupted reply.
-            if let e=incomplete ?? (error as? AgentError) { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt,providerMessage:e.providerMessage,discardIncompleteReply:e.discardIncompleteReply), credentials: credentials) }
-            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt,
-                             providerMessage:PiErrorText.transport(error,afterResponse:status != 0))
+            if let failure { throw failure }
+            throw CancellationError()
         }
+    }
+    /// What a failed attempt's request log says about its failure: the
+    /// error as the run sees it, the connection's own error when that was
+    /// the cause (URLError -1005 "The network connection was lost." for a
+    /// stream a proxy cut), and how long after dispatch the response ended.
+    static func failureRecord(_ failure: AgentError, cause: Error, afterMs: Double?) -> JSON {
+        var record: JSON = ["code": JSON(failure.code), "message": JSON(preview(failure.message, bytes: 2_048))]
+        if !(cause is AgentError), !(cause is CancellationError) {
+            let ns = cause as NSError
+            record["connectionError"] = ["domain": JSON(ns.domain), "code": JSON(ns.code), "description": JSON(preview(ns.localizedDescription, bytes: 512))]
+        }
+        if let afterMs, afterMs.isFinite, afterMs >= 0 { record["afterMs"] = JSON(afterMs.rounded()) }
+        return record
     }
     /// A stream event that opens an output item of any kind: a reasoning
     /// item, a message, a function call.
@@ -343,8 +364,14 @@ public struct ProviderClient: ModelClient {
     }
     /// A transport failure named by its cause: an unknown host, a refused
     /// connection, a timeout or an untrusted certificate, each with what to check.
-    public static func transportGuidance(_ error: Error, attempt: String) -> String {
+    /// `afterResponse`: the response had begun, so the gateway was reached
+    /// and the connection was lost or closed under a reply in progress.
+    public static func transportGuidance(_ error: Error, attempt: String, afterResponse: Bool = false) -> String {
         let cause: String
+        if afterResponse, (error as? URLError)?.code != .timedOut {
+            let ns = error as NSError
+            return "The connection was closed while the reply was arriving (\(ns.localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: ". "))), \(ns.domain) \(ns.code)). Inspect request \(attempt)."
+        }
         switch (error as? URLError)?.code {
         case .cannotFindHost?, .dnsLookupFailed?: cause = "The gateway's host could not be found; check the base URL in Settings."
         case .cannotConnectToHost?, .networkConnectionLost?, .notConnectedToInternet?: cause = "The gateway could not be reached; check the base URL, that the gateway is running, and your network."

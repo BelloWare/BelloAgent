@@ -23,6 +23,8 @@ public actor TraceStore {
         var sentEventIndices = 0, eventIndexError = false
         var identity: RoutingIdentity?
         var operation: JSON = .null
+        /// Why a failed attempt failed (`ProviderClient.failureRecord`); null otherwise.
+        var failure: JSON = .null
         var gateway: GatewayTelemetry?
         /// The context links still to be sent: after dispatch, or at finish
         /// for a request that never went out.
@@ -227,11 +229,12 @@ public actor TraceStore {
         // its diagnosis too, including attempts that produced no checkpoint.
         if trace.outcome != "running" { post(["type":"metadata","metadata":metadata(trace, messageIDs:false)], attempt: id, stage: .operation) }
     }
-    public func finish(_ id:String, outcome:String, modelOutcome:String) async {
+    public func finish(_ id:String, outcome:String, modelOutcome:String, failure:JSON? = nil) async {
         deliverContextLinks(id)
         flushResponse(id)
         flushEvents(id)
         traces[id]?.outcome=outcome; traces[id]?.modelOutcome=modelOutcome
+        if let failure { traces[id]?.failure=failure }
         if let trace = traces[id] { post(["type":"finish", "metadata":metadata(trace, messageIDs:false)], attempt: id, stage: .finish) }
     }
     public func outputs(_ id: String, messageIDs: [String]) async {
@@ -441,6 +444,8 @@ public actor TraceStore {
          "timingBoundary":"Monotonic URLSession dispatch, header callback (first HTTP observation), decoded body callbacks, body bytes containing parsed content/terminal, and task completion. Not socket/TLS or paint timing.",
          "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"lastContent":t.lastContent.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
         if messageIDs { value["messageIds"] = .array(t.messageIDs.map { JSON($0) }); value["outputMessageIds"] = .array(t.outputMessageIDs.map { JSON($0) }) }
+        // Only a failed attempt has one: other records are as they were.
+        if !t.failure.isNull { value["failure"] = t.failure }
         return value
     }
     public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t, messageIDs:false) }
